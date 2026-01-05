@@ -140,8 +140,8 @@ Every skill stored in Neo4j has:
   description: "What it does",   // Purpose and usage
   category: "Workflow",          // Category (see categories below)
   triggers: ["keyword1", "key2"], // Array of trigger keywords
-  workflow_template: "{...}",    // JSON STRING defining multi-agent workflow
-  parameters: "{\"email\": {...}}", // JSON STRING (not object!)
+  workflow_template: "{...}",    // JSON STRING with steps containing ACTUAL scripts/commands
+  parameters: "{\"param\": {...}}", // JSON STRING (not object!)
   created_at: datetime(),        // Creation timestamp
   updated_at: datetime(),        // Last update timestamp
   usage_count: 0,                // Times executed
@@ -162,37 +162,519 @@ Every skill stored in Neo4j has:
 
 ---
 
-## WORKFLOW TEMPLATE STRUCTURE
+## WORKFLOW TEMPLATE STRUCTURE (INLINE SCRIPTS & COMMANDS)
 
-*(Unchanged - same as previous version)*
+**CRITICAL: Skills store ACTUAL executable content, not just descriptions.**
+
+The `workflow_template` JSON contains steps with either:
+- **Commands** (Linux one-liners) - `type: "command"`
+- **Scripts** (Python/Bash multi-line) - `type: "script"`
+
+### Step Schema
+
+```json
+{
+  "steps": [
+    {
+      "step": 1,
+      "agent": "cybersecurity-agent | neo4j-graph-management-agent | research-analysis-agent | files-retrieving-agent",
+      "type": "command | script",
+
+      // For type="command" (Linux one-liners)
+      "command": "nmap -sn {{target_network}}",
+
+      // For type="script" (Python or multi-line bash)
+      "language": "python | bash",
+      "content": "from neo4j import GraphDatabase\n...[FULL SCRIPT]...",
+
+      // Common fields
+      "description": "Human-readable step description",
+      "params": ["target_network", "blueprint_id"],
+      "timeout": 60,
+      "output_var": "step_1_result"  // Optional: store output for later steps
+    }
+  ]
+}
+```
+
+### Example: Mixed Skill (Commands + Scripts)
+
+```json
+{
+  "steps": [
+    {
+      "step": 1,
+      "agent": "neo4j-graph-management-agent",
+      "type": "script",
+      "language": "python",
+      "content": "from neo4j import GraphDatabase\nimport os\nimport sys\nimport argparse\nfrom uuid import uuid4\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--timeout', type=int, default=60)\nparser.add_argument('--task-id', default='unknown')\nparser.add_argument('--blueprint', default='Blueprint#1')\nparser.add_argument('--count', type=int, default=10)\nargs = parser.parse_args()\n\nuri = os.getenv('NEO4J_URI')\nusername = os.getenv('NEO4J_USERNAME')\npassword = os.getenv('NEO4J_PASSWORD')\n\ndriver = GraphDatabase.driver(uri, auth=(username, password))\n\ntry:\n    with driver.session() as session:\n        data = [{'id': str(uuid4()), 'name': f'User_{i}', 'email': f'user{i}@example.com'} for i in range(args.count)]\n        session.run(\"\"\"\n            UNWIND $data AS row\n            CREATE (u:User {id: row.id, name: row.name, email: row.email, blueprintId: $bp})\n        \"\"\", data=data, bp=args.blueprint)\n        print(f'Created {args.count} User nodes')\nexcept Exception as e:\n    print(f'Error: {e}', file=sys.stderr)\n    sys.exit(1)\nfinally:\n    driver.close()",
+      "description": "Ingest User nodes with realistic data",
+      "params": ["count", "blueprint_id"],
+      "timeout": 60
+    },
+    {
+      "step": 2,
+      "agent": "neo4j-graph-management-agent",
+      "type": "script",
+      "language": "python",
+      "content": "from neo4j import GraphDatabase\nimport os\nimport sys\nimport argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--timeout', type=int, default=60)\nparser.add_argument('--task-id', default='unknown')\nparser.add_argument('--blueprint', default='Blueprint#1')\nargs = parser.parse_args()\n\nuri = os.getenv('NEO4J_URI')\nusername = os.getenv('NEO4J_USERNAME')\npassword = os.getenv('NEO4J_PASSWORD')\n\ndriver = GraphDatabase.driver(uri, auth=(username, password))\n\ntry:\n    with driver.session() as session:\n        result = session.run(\"\"\"\n            MATCH (u:User {blueprintId: $bp})\n            RETURN count(u) AS user_count, collect(u.name)[0..5] AS sample_users\n        \"\"\", bp=args.blueprint)\n        record = result.single()\n        kpi_data = {'user_count': record['user_count'], 'sample_users': record['sample_users']}\n        print(json.dumps(kpi_data))\nexcept Exception as e:\n    print(f'Error: {e}', file=sys.stderr)\n    sys.exit(1)\nfinally:\n    driver.close()",
+      "description": "Extract KPI data from Neo4j",
+      "params": ["blueprint_id"],
+      "timeout": 60,
+      "output_var": "kpi_data"
+    },
+    {
+      "step": 3,
+      "agent": "cybersecurity-agent",
+      "type": "command",
+      "command": "cat > /tmp/kpi_dashboard.html << 'HTMLEOF'\n<!DOCTYPE html>\n<html>\n<head><title>KPI Dashboard</title></head>\n<body>\n<h1>KPI Dashboard</h1>\n<p>User Count: {{kpi_data.user_count}}</p>\n<p>Sample Users: {{kpi_data.sample_users}}</p>\n</body>\n</html>\nHTMLEOF",
+      "description": "Create HTML dashboard file",
+      "params": ["kpi_data"],
+      "timeout": 30
+    },
+    {
+      "step": 4,
+      "agent": "cybersecurity-agent",
+      "type": "command",
+      "command": "cat /tmp/kpi_dashboard.html",
+      "description": "Display dashboard content",
+      "timeout": 10
+    }
+  ]
+}
+```
+
+### Parameter Substitution
+
+Parameters use `{{param_name}}` syntax:
+- `{{target_network}}` → replaced with user-provided value
+- `{{blueprint_id}}` → replaced with current blueprint (default: Blueprint#1)
+- `{{step_N_output}}` or `{{output_var}}` → replaced with output from previous step
+
+---
+
+## SKILL CREATION WORKFLOW
+
+**CRITICAL: Separate script authoring from skill registration to avoid timeout.**
+
+### Phase 1: Script Authoring (In Conversation - No Time Pressure)
+
+```
+User: "I want to create a skill that ingests data, extracts KPIs, and creates a dashboard"
+          ↓
+You (skill-manager): Generate the scripts in conversation
+          ↓
+You: "Here are the scripts for your skill:
+
+**Step 1: ingest_data.py**
+```python
+[FULL PYTHON SCRIPT]
+```
+
+**Step 2: extract_kpi.py**
+```python
+[FULL PYTHON SCRIPT]
+```
+
+**Step 3: create_dashboard (command)**
+```bash
+cat > /tmp/dashboard.html << 'EOF'
+[HTML CONTENT]
+EOF
+```
+
+Would you like to adjust anything before I register the skill?"
+          ↓
+User reviews, requests changes if needed
+          ↓
+User: "Looks good, create the skill"
+```
+
+### Phase 1.5: Script Validation (MANDATORY Before Registration)
+
+**CRITICAL: Validate ALL Python scripts with py_compile BEFORE storing in Neo4j.**
+
+**IMPORTANT: Write scripts to temp files with consistent naming - these files will be READ by the registration script to avoid escaping issues.**
+
+For each Python script in the skill:
+
+```bash
+# Step 1: Write script to temp file (use skill name and step number)
+cat > /tmp/skill_<skillname>_step_<N>.py << 'EOF'
+[PYTHON SCRIPT CONTENT]
+EOF
+
+# Step 2: Validate syntax
+python3 -m py_compile /tmp/skill_<skillname>_step_<N>.py
+
+# Step 3: Check result
+# If validation PASSES → Script file is ready for registration
+# If validation FAILS → Fix the script, re-validate, then proceed
+```
+
+**Example - Validating a 3-step skill called "kpi_dashboard":**
+
+```bash
+# Validate Step 1 (Python script)
+cat > /tmp/skill_kpi_dashboard_step_1.py << 'EOF'
+from neo4j import GraphDatabase
+import os
+import sys
+import argparse
+...
+EOF
+python3 -m py_compile /tmp/skill_kpi_dashboard_step_1.py
+
+# Validate Step 2 (Python script)
+cat > /tmp/skill_kpi_dashboard_step_2.py << 'EOF'
+from neo4j import GraphDatabase
+...
+EOF
+python3 -m py_compile /tmp/skill_kpi_dashboard_step_2.py
+
+# Step 3 is a command, write to file but skip py_compile
+cat > /tmp/skill_kpi_dashboard_step_3.sh << 'EOF'
+cat > /tmp/dashboard.html << 'HTMLEOF'
+...
+HTMLEOF
+EOF
+# No validation needed for bash commands
+```
+
+**Validation Response to User:**
+
+```
+✅ Script validation results:
+  - Step 1 (ingest_data.py): PASSED → /tmp/skill_kpi_dashboard_step_1.py
+  - Step 2 (extract_kpi.py): PASSED → /tmp/skill_kpi_dashboard_step_2.py
+  - Step 3 (create_dashboard): SAVED → /tmp/skill_kpi_dashboard_step_3.sh (command, no validation)
+
+All scripts written to temp files. Ready to register skill.
+```
+
+**If Validation Fails:**
+
+```
+❌ Script validation failed:
+
+Step 2 (extract_kpi.py):
+  File "/tmp/skill_kpi_dashboard_step_2.py", line 15
+    task_id = args.task_id
+IndentationError: unexpected indent
+
+Please fix the script and try again.
+```
+
+**RULE:** NEVER proceed to registration if any Python script fails py_compile validation.
+
+---
+
+### Phase 2: Skill Registration (Read From Temp Files)
+
+**CRITICAL: The registration script READS from temp files instead of embedding scripts inline.**
+
+**Why?** Embedding Python scripts as strings inside another Python script causes escaping nightmares:
+- Newlines become `\n`
+- Quotes need escaping
+- Indentation gets mangled
+- The outer script can fail py_compile even if inner scripts are valid
+
+**Solution:** Registration script reads validated files from /tmp/
+
+```python
+# REGISTRATION SCRIPT TEMPLATE
+from neo4j import GraphDatabase
+import os
+import sys
+import argparse
+import json
+from uuid import uuid4
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--timeout', type=int, default=30)
+parser.add_argument('--task-id', default='unknown')
+parser.add_argument('--skill-name', required=True)
+parser.add_argument('--description', required=True)
+parser.add_argument('--category', default='Custom')
+parser.add_argument('--triggers', required=True)  # Comma-separated
+parser.add_argument('--step-files', required=True)  # Comma-separated: step_1.py,step_2.py,step_3.sh
+parser.add_argument('--step-agents', required=True)  # Comma-separated: neo4j-graph-management-agent,neo4j-graph-management-agent,cybersecurity-agent
+parser.add_argument('--step-types', required=True)  # Comma-separated: script,script,command
+parser.add_argument('--step-languages', required=True)  # Comma-separated: python,python,bash
+parser.add_argument('--step-descriptions', required=True)  # Comma-separated
+args = parser.parse_args()
+
+task_id = args.task_id
+print(f"[{task_id}] Starting skill registration")
+
+# Parse arguments
+triggers = [t.strip() for t in args.triggers.split(',')]
+step_files = [f.strip() for f in args.step_files.split(',')]
+step_agents = [a.strip() for a in args.step_agents.split(',')]
+step_types = [t.strip() for t in args.step_types.split(',')]
+step_languages = [l.strip() for l in args.step_languages.split(',')]
+step_descriptions = [d.strip() for d in args.step_descriptions.split('|')]  # Use | for descriptions (may contain commas)
+
+# Build workflow by reading from temp files
+print(f"[{task_id}] Reading scripts from temp files...")
+steps = []
+for i, (file_path, agent, stype, lang, desc) in enumerate(zip(step_files, step_agents, step_types, step_languages, step_descriptions), 1):
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    step = {
+        "step": i,
+        "agent": agent,
+        "type": stype,
+        "description": desc
+    }
+
+    if stype == "script":
+        step["language"] = lang
+        step["content"] = content
+    else:  # command
+        step["command"] = content
+
+    steps.append(step)
+    print(f"[{task_id}] Loaded step {i}: {desc[:30]}...")
+
+workflow_template = json.dumps({"steps": steps})
+
+# Store in Neo4j
+uri = os.getenv('NEO4J_URI')
+username = os.getenv('NEO4J_USERNAME')
+password = os.getenv('NEO4J_PASSWORD')
+
+if not all([uri, username, password]):
+    print("Error: Missing NEO4J environment variables", file=sys.stderr)
+    sys.exit(1)
+
+driver = GraphDatabase.driver(uri, auth=(username, password))
+
+try:
+    with driver.session() as session:
+        # Check if exists
+        print(f"[{task_id}] Checking for existing skill...")
+        check = session.run("OPTIONAL MATCH (s:Skill {name: $name}) RETURN s IS NOT NULL AS exists", name=args.skill_name)
+        if check.single()['exists']:
+            print(f"[{task_id}] Error: Skill '{args.skill_name}' already exists", file=sys.stderr)
+            sys.exit(1)
+
+        # Create skill
+        print(f"[{task_id}] Creating skill...")
+        skill_id = str(uuid4())
+        session.run("""
+            CREATE (s:Skill {
+                id: $id,
+                name: $name,
+                description: $description,
+                category: $category,
+                triggers: $triggers,
+                workflow_template: $workflow,
+                parameters: '{}',
+                created_at: datetime(),
+                updated_at: datetime(),
+                usage_count: 0,
+                version: 1
+            })
+        """, id=skill_id, name=args.skill_name, description=args.description,
+             category=args.category, triggers=triggers, workflow=workflow_template)
+
+        # Verify
+        print(f"[{task_id}] Verifying creation...")
+        verify = session.run("MATCH (s:Skill {id: $id}) RETURN s.name AS name", id=skill_id)
+        print(f"[{task_id}] Created skill: {verify.single()['name']}")
+        print(f"[{task_id}] Skill ID: {skill_id}")
+        print(f"[{task_id}] Steps: {len(steps)}")
+        print(f"[{task_id}] Triggers: {triggers}")
+
+except Exception as e:
+    print(f"[{task_id}] Error: {e}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    driver.close()
+```
+
+**Registration Command Example:**
+
+```bash
+# First, validate the registration script itself
+cat > /tmp/skill_register.py << 'EOF'
+[REGISTRATION SCRIPT ABOVE]
+EOF
+python3 -m py_compile /tmp/skill_register.py
+
+# Then execute with arguments
+python3 /tmp/skill_register.py \
+  --task-id "task-001" \
+  --skill-name "KPI Dashboard Generator" \
+  --description "Ingests data, extracts KPIs, creates HTML dashboard" \
+  --category "Analytics" \
+  --triggers "create kpi,generate dashboard,kpi report" \
+  --step-files "/tmp/skill_kpi_dashboard_step_1.py,/tmp/skill_kpi_dashboard_step_2.py,/tmp/skill_kpi_dashboard_step_3.sh" \
+  --step-agents "neo4j-graph-management-agent,neo4j-graph-management-agent,cybersecurity-agent" \
+  --step-types "script,script,command" \
+  --step-languages "python,python,bash" \
+  --step-descriptions "Ingest User nodes|Extract KPI data|Create HTML dashboard"
+```
+
+---
+
+### Why This Approach Works
+
+| Problem | Solution |
+|---------|----------|
+| Scripts inside scripts = escaping hell | Read from files, no embedding |
+| Registration script might have syntax errors | Validate with py_compile first |
+| Inner scripts not validated | Phase 1.5 validates each before saving to temp |
+| Complex JSON string manipulation | `json.dumps()` handles escaping automatically |
+
+### Complete Flow Summary
+
+```
+Phase 1: Authoring
+  → Generate scripts in conversation
+  → User reviews
+
+Phase 1.5: Validation
+  → Write each script to /tmp/skill_<name>_step_<N>.py
+  → py_compile each Python script
+  → Report results
+
+Phase 2: Registration
+  → Write registration script to /tmp/skill_register.py
+  → py_compile the registration script
+  → Execute: registration script READS from temp files
+  → Scripts stored in Neo4j via json.dumps() (handles escaping)
+
+Execution:
+  → skill-manager fetches skill
+  → Returns workflow_template JSON
+  → main-agent delegates each step with EXACT content
+```
+
+**No escaping issues. No syntax errors. All scripts validated.**
+
+---
+
+## SKILL EXECUTION WORKFLOW
+
+When a skill is triggered, return the STORED scripts/commands (not regenerated).
+
+### Execution Response Format
+
+```
+[TASK-ID: task-001]
+[STATUS: success]
+[FROM: skill-manager-agent]
+
+Skill detected: "KPI Dashboard Generator"
+Matched trigger: "create kpi dashboard"
+
+Execution plan with {{param_count}} steps:
+
+STEP 1:
+  Agent: neo4j-graph-management-agent
+  Type: script
+  Language: python
+  Content:
+```python
+[EXACT STORED SCRIPT - NOT REGENERATED]
+```
+  Params: count=10, blueprint_id=Blueprint#1
+  Timeout: 60s
+
+STEP 2:
+  Agent: neo4j-graph-management-agent
+  Type: script
+  Language: python
+  Content:
+```python
+[EXACT STORED SCRIPT]
+```
+  Params: blueprint_id=Blueprint#1
+  Timeout: 60s
+  Output stored as: kpi_data
+
+STEP 3:
+  Agent: cybersecurity-agent
+  Type: command
+  Command: cat > /tmp/kpi_dashboard.html << 'HTMLEOF'...
+  Params: kpi_data={{step_2_output}}
+  Timeout: 30s
+
+STEP 4:
+  Agent: cybersecurity-agent
+  Type: command
+  Command: cat /tmp/kpi_dashboard.html
+  Timeout: 10s
+
+Ready for main-agent to execute step-by-step.
+```
+
+### What main-agent Does With This
+
+```
+main-agent receives execution plan
+          ↓
+For each step:
+  - If type="script" + language="python":
+      Delegate to neo4j-graph-management-agent with: content
+  - If type="script" + language="bash":
+      Delegate to cybersecurity-agent with: content (as bash script)
+  - If type="command":
+      Delegate to cybersecurity-agent with: command
+          ↓
+Collect output, substitute into next step params if needed
+          ↓
+Continue until all steps complete
+```
 
 ---
 
 ## QUICK TIMEOUT REFERENCE
 
-*(Unchanged - same as previous version)*
+| Operation | Timeout |
+|-----------|---------|
+| Health check | 15s |
+| Simple command | 30s |
+| Python script (Neo4j) | 60s |
+| Complex/batch operations | 120s+ |
+| Skill registration | 30s (just storage) |
 
 ---
 
 ## NEO4J SCRIPT EXECUTION METHOD
 
-**CRITICAL: Use cat + python pattern with arguments for ALL Neo4j operations**
+**CRITICAL: Use cat + validate + python pattern for ALL Neo4j operations**
 
+**3-Step Execution Pattern:**
 ```bash
+# Step 1: Write script to file
 cat > /tmp/neo4j_<timestamp>.py << 'EOF'
 [PYTHON SCRIPT]
 EOF
 
+# Step 2: VALIDATE SYNTAX (catches IndentationError before execution!)
+python3 -m py_compile /tmp/neo4j_<timestamp>.py
+
+# Step 3: Execute only if validation passed
 python3 /tmp/neo4j_<timestamp>.py --timeout 60 --task-id "task-123"
 ```
 
-**MCP Tool call example:**
+**MCP Tool call example (with validation):**
 ```
 Tool: Neo4j-ExecutePythonQuery
 Function: Execute_Command
 Parameters:
-  command: "cat > /tmp/neo4j_1704378900.py << 'EOF'\n[SCRIPT]\nEOF\n\n && python3 /tmp/neo4j_1704378900.py --timeout 60 --task-id 'task-123'"
+  command: "cat > /tmp/neo4j_1704378900.py << 'EOF'\n[SCRIPT]\nEOF\n\npython3 -m py_compile /tmp/neo4j_1704378900.py && python3 /tmp/neo4j_1704378900.py --timeout 60 --task-id 'task-123'"
 ```
+
+**Why validation matters:**
+- `python3 -m py_compile` checks syntax WITHOUT executing
+- Catches IndentationError, SyntaxError before runtime
+- The `&&` ensures execution ONLY happens if validation passes
+- If validation fails, you'll see the exact line number and error
 
 **Timeout values (configurable via --timeout):**
 - Health checks: 15s
@@ -299,6 +781,53 @@ finally:
 - Batching: Use UNWIND for multiple creates/updates in one query.
 - Multiple Queries: Break complex operations into steps within one script.
 - Multi-Threading: For independent reads.
+
+---
+
+## CRITICAL: PYTHON INDENTATION RULES
+
+**IndentationError is the #1 cause of script failures. Follow these rules EXACTLY:**
+
+1. **Use exactly 4 spaces for indentation** - NEVER use tabs
+2. **Top-level code has ZERO indentation** (imports, parser, variable assignments)
+3. **Inside `try:`, `with:`, `if:` blocks** - indent by 4 spaces
+4. **Inside nested blocks** - add 4 more spaces per level
+5. **NEVER mix indentation levels** on consecutive lines at the same scope
+
+**CORRECT structure (memorize this pattern):**
+```python
+from neo4j import GraphDatabase  # 0 spaces - top level
+import argparse                   # 0 spaces - top level
+
+parser = argparse.ArgumentParser()  # 0 spaces - top level
+args = parser.parse_args()          # 0 spaces - top level
+
+timeout_seconds = args.timeout  # 0 spaces - top level
+task_id = args.task_id          # 0 spaces - top level (SAME LEVEL!)
+
+try:                            # 0 spaces - top level
+    with driver.session() as session:  # 4 spaces - inside try
+        result = session.run(query)    # 8 spaces - inside with
+        for record in result:          # 8 spaces - inside with
+            print(record)              # 12 spaces - inside for
+except Exception as e:          # 0 spaces - top level
+    print(e)                    # 4 spaces - inside except
+finally:                        # 0 spaces - top level
+    driver.close()              # 4 spaces - inside finally
+```
+
+**WRONG (causes IndentationError):**
+```python
+args = parser.parse_args()
+timeout_seconds = args.timeout
+    task_id = args.task_id  # ❌ WRONG - unexpected indent!
+```
+
+**Before executing ANY script, mentally verify:**
+- [ ] All imports at column 0?
+- [ ] All top-level assignments at column 0?
+- [ ] Consistent 4-space increments inside blocks?
+- [ ] No random indentation jumps?
 
 ---
 

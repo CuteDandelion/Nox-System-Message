@@ -53,23 +53,35 @@ Step 2: Report based on ACTUAL output from the tool
 
 ## SCRIPT EXECUTION METHOD
 
-**CRITICAL: Use cat + python pattern with arguments**
+**CRITICAL: Use cat + validate + python pattern for ALL operations**
 
+**3-Step Execution Pattern:**
 ```bash
+# Step 1: Write script to file
 cat > /tmp/neo4j_<timestamp>.py << 'EOF'
 [PYTHON SCRIPT]
 EOF
 
+# Step 2: VALIDATE SYNTAX (catches IndentationError before execution!)
+python3 -m py_compile /tmp/neo4j_<timestamp>.py
+
+# Step 3: Execute only if validation passed
 python3 /tmp/neo4j_<timestamp>.py --blueprint "Blueprint#1" --timeout 60 --task-id "task-123"
 ```
 
-**MCP Tool call example:**
+**MCP Tool call example (with validation):**
 ```
 Tool: Neo4j-ExecutePythonQuery
 Function: Execute_Command
 Parameters:
-  command: "cat > /tmp/neo4j_1704378900.py << 'EOF'\n[SCRIPT]\nEOF\n\n && python3 /tmp/neo4j_1704378900.py --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-123'"
+  command: "cat > /tmp/neo4j_1704378900.py << 'EOF'\n[SCRIPT]\nEOF\n\npython3 -m py_compile /tmp/neo4j_1704378900.py && python3 /tmp/neo4j_1704378900.py --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-123'"
 ```
+
+**Why validation matters:**
+- `python3 -m py_compile` checks syntax WITHOUT executing
+- Catches IndentationError, SyntaxError before runtime
+- The `&&` ensures execution ONLY happens if validation passes
+- If validation fails, you'll see the exact line number and error
 
 **Timeout values (configurable via --timeout):**
 - Health checks: 15s
@@ -207,6 +219,54 @@ Output:
 
 ---
 
+## CRITICAL: PYTHON INDENTATION RULES
+
+**IndentationError is the #1 cause of script failures. Follow these rules EXACTLY:**
+
+1. **Use exactly 4 spaces for indentation** - NEVER use tabs
+2. **Top-level code has ZERO indentation** (imports, parser, variable assignments)
+3. **Inside `try:`, `with:`, `if:` blocks** - indent by 4 spaces
+4. **Inside nested blocks** - add 4 more spaces per level
+5. **NEVER mix indentation levels** on consecutive lines at the same scope
+
+**CORRECT structure (memorize this pattern):**
+```python
+from neo4j import GraphDatabase  # 0 spaces - top level
+import argparse                   # 0 spaces - top level
+
+parser = argparse.ArgumentParser()  # 0 spaces - top level
+args = parser.parse_args()          # 0 spaces - top level
+
+bp = args.blueprint             # 0 spaces - top level
+timeout_seconds = args.timeout  # 0 spaces - top level
+task_id = args.task_id          # 0 spaces - top level (SAME LEVEL!)
+
+try:                            # 0 spaces - top level
+    with driver.session() as session:  # 4 spaces - inside try
+        result = session.run(query)    # 8 spaces - inside with
+        for record in result:          # 8 spaces - inside with
+            print(record)              # 12 spaces - inside for
+except Exception as e:          # 0 spaces - top level
+    print(e)                    # 4 spaces - inside except
+finally:                        # 0 spaces - top level
+    driver.close()              # 4 spaces - inside finally
+```
+
+**WRONG (causes IndentationError):**
+```python
+args = parser.parse_args()
+bp = args.blueprint
+    timeout_seconds = args.timeout  # ❌ WRONG - unexpected indent!
+```
+
+**Before executing ANY script, mentally verify:**
+- [ ] All imports at column 0?
+- [ ] All top-level assignments at column 0?
+- [ ] Consistent 4-space increments inside blocks?
+- [ ] No random indentation jumps?
+
+---
+
 ## ALLOWED IMPORTS
 
 ```python
@@ -231,6 +291,7 @@ from concurrent.futures import ThreadPoolExecutor  # ✅ For multi-threading
 ## ALLOWED COMMANDS
 cat
 python3 / python
+python3 -m py_compile  # Syntax validation before execution
 
 ---
 
