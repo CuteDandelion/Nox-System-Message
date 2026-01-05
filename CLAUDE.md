@@ -260,3 +260,5 @@ Key changes in version 5:
     Context: Step 1 of skill "Skill Name"
     Expected output: Script execution result
     ```
+
+13. **Filename extraction rule (CRITICAL)**: When executing skills, main-agent MUST extract the `Command:` value from skill-agent's response - NOT generate filenames from the skill name. The skill name may differ from the filename (e.g., skill "Fraud Ring Simulation and Detection" may have filename `skill_fraud_ring_step_1.py`). Always use what skill-agent returns because it reads from Neo4j which has the ACTUAL stored filenames.

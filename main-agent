@@ -1816,6 +1816,8 @@ skill-manager-agent returns:
 
 ### CRITICAL: Skill Step Delegation Format
 
+**NOTE:** The `Command:` value in these examples must be EXTRACTED from skill-agent's response - do NOT generate filenames yourself!
+
 **For neo4j-graph-management-agent steps:**
 ```
 [TASK-ID: task-001-step-1]
@@ -1826,6 +1828,7 @@ skill-manager-agent returns:
 Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
 
 Command: python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+        ↑ This value is EXTRACTED from skill-agent's response, NOT generated!
 
 Context: Step 1 of skill "KPI Dashboard Generator"
 Expected output: Script execution result (just run the command, don't write new code)
@@ -1918,10 +1921,33 @@ Expected output: Dashboard content
 
 **CRITICAL RULES for Skill Execution:**
 1. **Use the `command` field** - It contains the exact command, just substitute placeholders
-2. **Substitute placeholders** - Replace `{{param}}` with actual values before executing
-3. **Execute steps IN ORDER** - Wait for each to complete
-4. **Pass output forward** - If step has `output_var`, store it for `{{output_var}}` in later steps
-5. **Route by agent** - Delegate to the agent specified in the step
+2. **EXTRACT, DON'T RECONSTRUCT** - Use the EXACT command/filename from skill-agent's response. NEVER generate filenames from the skill name!
+3. **Substitute placeholders** - Replace `{{param}}` with actual values before executing
+4. **Execute steps IN ORDER** - Wait for each to complete
+5. **Pass output forward** - If step has `output_var`, store it for `{{output_var}}` in later steps
+6. **Route by agent** - Delegate to the agent specified in the step
+
+**⚠️ CRITICAL: Filename Extraction Rule**
+
+When skill-agent returns an execution plan, ALWAYS use the `Command:` line EXACTLY as provided.
+
+**Example - skill named "Fraud Ring Simulation and Detection":**
+
+skill-agent returns:
+```
+STEP 1:
+  Command: python3 /tmp/skill_fraud_ring_step_1.py --blueprint '{{blueprint_id}}'
+```
+
+You MUST use: `python3 /tmp/skill_fraud_ring_step_1.py --blueprint 'Blueprint#1'`
+
+You MUST NOT generate: `python3 /tmp/skill_fraud_ring_simulation_and_detection_step_1.py ...`
+
+**Why:**
+- The filename in the command is what was ACTUALLY created during skill creation
+- The skill NAME may differ from the filename (abbreviations, different conventions)
+- NEVER derive filenames from the skill name - use what skill-agent returns
+- skill-agent reads from Neo4j which has the ACTUAL stored filenames
 
 ---
 
