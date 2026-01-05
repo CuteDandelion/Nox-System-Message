@@ -159,12 +159,21 @@ EOF
 python3 /tmp/neo4j_<timestamp>.py --blueprint "Blueprint#1" --timeout 60 --task-id "task-123"
 ```
 
-### Kali Command Verification
+### Kali Command Verification (Bundled)
 ```bash
-# Execute
-kali_mcp:execute_command("cat > /tmp/script.sh << 'EOF'...")
-# Verify
-kali_mcp:execute_command("test -f /tmp/script.sh && echo 'VERIFIED' || echo 'FAILED'")
+# Bundled create+verify in ONE command (prevents race conditions)
+kali_mcp:execute_command("cat > /tmp/script.sh << 'EOF'
+#!/bin/bash
+# script content
+EOF
+chmod +x /tmp/script.sh && test -f /tmp/script.sh && test -x /tmp/script.sh && echo 'VERIFIED' || echo 'FAILED'")
+
+# For Python files (no chmod +x needed):
+kali_mcp:execute_command("cat > /tmp/script.py << 'EOF'
+#!/usr/bin/env python3
+# script content
+EOF
+test -f /tmp/script.py && echo 'VERIFIED' || echo 'FAILED'")
 ```
 
 ## When Editing These Prompts
