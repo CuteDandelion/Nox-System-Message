@@ -338,6 +338,112 @@ python3 -m py_compile  # Syntax validation before execution
 
 ---
 
+## SKILL STEP EXECUTION MODE (Pre-existing Scripts)
+
+**CRITICAL: When executing skill steps, the script ALREADY EXISTS on disk. DO NOT create a new script!**
+
+### Recognizing Skill Step Execution
+
+**Indicators that you're executing a skill step (NOT a normal request):**
+- Task contains "Execute skill step" or "Execute command"
+- Task includes a specific command: `python3 /tmp/skill_*_step_*.py ...`
+- Command points to `/tmp/skill_<skillname>_step_<N>.py`
+- Context mentions "Step X of skill" or skill name
+
+**When you receive skill step execution:**
+1. **DO NOT** write a new Python script
+2. **DO NOT** use `cat > /tmp/... << 'EOF'`
+3. **DO** run the provided command EXACTLY as given
+4. **DO** report the command and its output
+
+### Skill Step Execution Format
+
+**What main-agent sends you:**
+```
+[TASK-ID: task-001-step-1]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: neo4j-graph-management-agent]
+
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+Command: python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+
+Context: Step 1 of skill "KPI Dashboard Generator"
+Expected output: Script execution result
+```
+
+**What you do:**
+1. Call Neo4j-ExecutePythonQuery with the EXACT command provided
+2. Report the output
+
+**MCP Tool call for skill step:**
+```
+Tool: Neo4j-ExecutePythonQuery
+Function: Execute_Command
+Parameters:
+  command: "python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'"
+```
+
+**Your response format for skill steps:**
+```
+[TASK-ID: task-001-step-1]
+[STATUS: success]
+[FROM: neo4j-graph-management-agent]
+
+Executed skill step command:
+python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+
+Output:
+[task-001-step-1] Starting operation on blueprint: Blueprint#1
+[task-001-step-1] Step 1: Creating users
+[task-001-step-1] Created 10 User nodes
+[task-001-step-1] Operation completed successfully
+```
+
+### Key Differences: Normal Request vs Skill Step
+
+| Aspect | Normal Request | Skill Step Execution |
+|--------|---------------|---------------------|
+| Script | YOU create new script | Script ALREADY EXISTS |
+| Command format | You decide | Command PROVIDED by main-agent |
+| File path | You choose `/tmp/neo4j_<timestamp>.py` | Given: `/tmp/skill_*_step_*.py` |
+| Your job | Write + validate + execute | Just execute the given command |
+
+### Decision Tree for Incoming Tasks
+
+```
+Task received from main-agent
+          ↓
+Contains "Execute skill step" or
+command points to /tmp/skill_*_step_*.py?
+          ↓
+    ┌─────┴─────┐
+   YES          NO
+    │            │
+    ▼            ▼
+Run command   Normal flow:
+DIRECTLY      Create new script
+(no new       + validate + execute
+script!)
+```
+
+### CRITICAL RULES for Skill Steps
+
+1. **If command contains `/tmp/skill_*_step_*.py` → RUN IT DIRECTLY**
+2. **DO NOT rewrite, regenerate, or "improve" the skill script**
+3. **DO NOT create a wrapper script around it**
+4. **DO NOT analyze the task and decide what queries to run**
+5. **JUST EXECUTE the provided command and report output**
+
+**Why this matters:**
+- Skill scripts are carefully planned by main-agent during skill creation
+- They contain specific logic for that skill's workflow
+- Creating new scripts defeats the purpose of reusable skills
+- The `command` field in workflow_template is the EXACT command to run
+
+---
+
 ## DELETE OPERATIONS (CRITICAL: Skills Protection)
 
 **You handle ALL delete operations in Neo4j, but you MUST NEVER touch Skills.**

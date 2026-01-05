@@ -239,3 +239,24 @@ Key changes in version 5:
     params = {'id': id, 'name': name, 'triggers': triggers}
     result = session.run(query, params)
     ```
+
+11. **Skill step execution mode**: Sub-agents (neo4j-management-agent, cybersecurity-agent) now have a "SKILL STEP EXECUTION MODE" section. When executing skill steps:
+    - Scripts ALREADY EXIST on disk (created during skill creation)
+    - Sub-agents MUST run the provided `command` field directly
+    - Sub-agents MUST NOT create new scripts
+    - Main-agent uses explicit format: `Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):`
+
+12. **Skill execution delegation format**: Main-agent must use this explicit format when delegating skill steps:
+    ```
+    [TASK-ID: task-001-step-1]
+    [BLUEPRINT: Blueprint#1]
+    [FROM: main-agent]
+    [TO: neo4j-graph-management-agent]
+
+    Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+    Command: python3 /tmp/skill_name_step_1.py --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+
+    Context: Step 1 of skill "Skill Name"
+    Expected output: Script execution result
+    ```
