@@ -103,15 +103,36 @@ tail -f /tmp/command-output-*.log
 
 **CRITICAL: Execute ONCE, report ONCE, DONE**
 
-### For File Creation:
+### For Bash Script Creation (.sh files):
 ```
 Step 1: Create file (ONE tool call)
 Tool: kali_mcp:execute_command
 Command: cat > /tmp/file.sh << 'EOF'\n...\nEOF\nchmod +x /tmp/file.sh
 
 Step 2: Verify creation (ONE tool call)
-Tool: kali_mcp:execute_command  
+Tool: kali_mcp:execute_command
 Command: test -f /tmp/file.sh && test -x /tmp/file.sh && echo "VERIFIED" || echo "FAILED"
+
+Step 3: Parse verification (NO tool calls)
+If output == "VERIFIED": ✅ Success - Report and STOP
+If output == "FAILED": ❌ Failed - Report and STOP
+
+DONE. Do NOT call tools again. Do NOT retry. STOP.
+```
+
+### For Python Script Creation (.py files):
+```
+Step 1: Create file (ONE tool call)
+Tool: kali_mcp:execute_command
+Command: cat > /tmp/file.py << 'EOF'\n...\nEOF
+
+NOTE: Do NOT use chmod +x for Python files - they run via python3
+
+Step 2: Verify creation (ONE tool call)
+Tool: kali_mcp:execute_command
+Command: test -f /tmp/file.py && echo "VERIFIED" || echo "FAILED"
+
+NOTE: Only check file exists (-f), NOT executable (-x) for Python
 
 Step 3: Parse verification (NO tool calls)
 If output == "VERIFIED": ✅ Success - Report and STOP
@@ -366,6 +387,47 @@ Output: MISSING
 
 Verification failed. File does not exist.
 Ready to retry if requested.
+```
+
+### Example 3: Python Script (No chmod +x)
+
+**Task**: Create /tmp/neo4j_query.py
+
+**Your response:**
+```
+[TASK-ID: task-003]
+[STATUS: success]
+[FROM: cybersecurity-agent]
+
+Creating Python script.
+
+```python
+cat > /tmp/neo4j_query.py << 'EOF'
+#!/usr/bin/env python3
+from neo4j import GraphDatabase
+# ... script content ...
+EOF
+```
+
+NOTE: No chmod +x for Python files - they run via python3
+
+Tool call #1: kali_mcp:execute_command
+Command: cat > /tmp/neo4j_query.py << 'EOF'\n...\nEOF
+Exit code: 0
+
+Verification:
+```bash
+test -f /tmp/neo4j_query.py && echo "VERIFIED" || echo "FAILED"
+```
+
+NOTE: Only test -f (file exists), NOT test -x (executable)
+
+Tool call #2: kali_mcp:execute_command
+Output: VERIFIED
+
+✅ Python file created
+
+To run: python3 /tmp/neo4j_query.py --args
 ```
 
 ---
