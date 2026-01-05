@@ -514,6 +514,15 @@ try:
     with driver.session() as session:
         # Check + Create in one operation (no separate verify)
         skill_id = str(uuid4())
+        params = {
+            'id': skill_id,
+            'name': SKILL_NAME,
+            'description': SKILL_DESCRIPTION,
+            'category': SKILL_CATEGORY,
+            'triggers': SKILL_TRIGGERS,
+            'workflow': workflow_json,
+            'parameters': parameters_json
+        }
         result = session.run("""
             OPTIONAL MATCH (existing:Skill {name: $name})
             WITH existing
@@ -532,9 +541,7 @@ try:
                 version: 1
             })
             RETURN s.id AS created_id
-        """, id=skill_id, name=SKILL_NAME, description=SKILL_DESCRIPTION,
-             category=SKILL_CATEGORY, triggers=SKILL_TRIGGERS,
-             workflow=workflow_json, parameters=parameters_json)
+        """, params)
 
         record = result.single()
         if record and record['created_id']:
@@ -555,15 +562,44 @@ finally:
 ```
 
 **Key design choices (V5):**
-- **Reads from JSON file** - `json.load(file)` NEVER has escaping issues
+- **Reads from JSON file** - `json.load(file)` is clean and avoids escaping complexity
 - **--metadata-file parameter** - Only CLI arg needed (besides timeout/task-id)
 - **Validates before storing** - Checks required fields
 - **Single query** with OPTIONAL MATCH + WHERE + CREATE (no verification loop)
+- **Uses params dict for session.run()** - Passes parameters as dict, not keyword args (prevents "dictionary update sequence" error)
 - **ONE tool call, ONE query, DONE**
 
-**Why this fixes the "dictionary update sequence" error:**
-- Old way: Embedded JSON in script → escaping corrupts dict structure
-- New way: JSON in file → `json.load()` parses correctly every time
+---
+
+## CRITICAL: session.run() PARAMETER SYNTAX
+
+**The "dictionary update sequence element #0 has length 1; 2 is required" error is caused by passing keyword arguments to `session.run()`.**
+
+### ❌ WRONG - Causes dict error:
+```python
+# Keyword arguments cause driver's internal dict merge to fail
+result = session.run(query, id=skill_id, name=SKILL_NAME, triggers=SKILL_TRIGGERS)
+```
+
+### ✅ CORRECT - Use explicit params dict:
+```python
+# Create params dict and pass as single positional argument
+params = {
+    'id': skill_id,
+    'name': SKILL_NAME,
+    'triggers': SKILL_TRIGGERS,
+    'workflow': workflow_json,
+    'parameters': parameters_json
+}
+result = session.run(query, params)
+```
+
+**Why this matters:**
+- Neo4j driver's `session.run()` internally merges parameters using `dict(parameters or {}, **kwargs)`
+- Passing many keyword arguments directly causes this merge logic to fail
+- Passing a single params dict as a positional argument bypasses the problematic merge
+
+**RULE:** Always create an explicit params dict and pass it as a single argument to `session.run()`. Never use keyword arguments.
 
 ---
 
@@ -620,6 +656,14 @@ driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 
 try:
     with driver.session() as session:
+        params = {
+            'name': skill_name,
+            'description': NEW_DESCRIPTION,
+            'category': NEW_CATEGORY,
+            'triggers': NEW_TRIGGERS,
+            'workflow': workflow_json,
+            'parameters': parameters_json
+        }
         result = session.run("""
             MATCH (s:Skill {name: $name})
             SET s.description = $description,
@@ -630,9 +674,7 @@ try:
                 s.updated_at = datetime(),
                 s.version = s.version + 1
             RETURN s.id AS id, s.version AS version
-        """, name=skill_name, description=NEW_DESCRIPTION,
-             category=NEW_CATEGORY, triggers=NEW_TRIGGERS,
-             workflow=workflow_json, parameters=parameters_json)
+        """, params)
 
         record = result.single()
         if record:
@@ -861,10 +903,11 @@ try:
         # NOTE: Use OPTIONAL MATCH to handle empty database (returns row with exists=false)
         # Regular MATCH returns None when no skill exists, causing errors
         print(f"[{task_id}] Step 1: Checking for existing skill")
+        params = {'name': 'Example Skill'}
         check_result = session.run("""
             OPTIONAL MATCH (s:Skill {name: $name})
             RETURN s IS NOT NULL AS exists
-        """, name='Example Skill')
+        """, params)
 
         record = check_result.single()
         if record and record['exists']:
@@ -874,6 +917,15 @@ try:
         # Step 2: Create new skill
         print(f"[{task_id}] Step 2: Creating skill")
         skill_id = str(uuid4())
+        params = {
+            'id': skill_id,
+            'name': 'Example Skill',
+            'description': 'Description',
+            'category': 'Custom',
+            'triggers': ['trigger1'],
+            'workflowJson': '{}',
+            'parametersJson': '{}'
+        }
         session.run("""
             CREATE (s:Skill {
                 id: $id,
@@ -888,15 +940,15 @@ try:
                 usage_count: 0,
                 version: 1
             })
-        """, id=skill_id, name='Example Skill', description='Description', 
-             category='Custom', triggers=['trigger1'], workflowJson='{}', parametersJson='{}')
+        """, params)
         
         # Step 3: Verify creation
         print(f"[{task_id}] Step 3: Verifying creation")
+        params = {'id': skill_id}
         verify_result = session.run("""
             MATCH (s:Skill {id: $id})
             RETURN s.name AS name
-        """, id=skill_id)
+        """, params)
         
         print(f"Created skill: {verify_result.single()['name']}")
 
@@ -1108,12 +1160,13 @@ driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 try:
     with driver.session() as session:
         # Find and delete skill
+        params = {'name': args.skill_name}
         result = session.run("""
             MATCH (s:Skill {name: $name})
             WITH s, s.id AS deleted_id, s.name AS deleted_name
             DELETE s
             RETURN deleted_id, deleted_name
-        """, name=args.skill_name)
+        """, params)
 
         record = result.single()
         if record:
