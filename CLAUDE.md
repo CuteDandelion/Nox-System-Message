@@ -57,23 +57,40 @@ When `file-metadata_*` is detected in user message:
 | files-retrieving-agent | qdrant-retrieve | Vector DB document retrieval |
 | skill-manager-agent | Neo4j-ExecutePythonQuery | Skill CRUD in Neo4j |
 
-### Skills System
+### Skills System (V4 - Main-Agent Plans, Skill-Agent Stores)
 
-Skills are reusable multi-agent workflow templates stored as Neo4j nodes with:
+**Key change in V4:** Main-agent now plans and writes skill workflows (including scripts). Skill-manager-agent only stores and retrieves them.
+
+Workflow:
+1. User requests skill creation
+2. **Main-agent** plans the workflow, writes Python scripts/bash commands, includes filenames
+3. User approves the plan
+4. Main-agent sends COMPLETE package to skill-manager-agent
+5. **Skill-manager-agent** stores it exactly as received (no modification)
+
+Skill nodes contain:
 - `triggers`: Keywords that auto-detect the skill
-- `workflow_template`: JSON string defining delegation steps
+- `workflow_template`: JSON string with steps, each containing:
+  - `agent`: Which sub-agent executes this step
+  - `type`: "script" or "command"
+  - `filename`: **REQUIRED** - path where script will be written (e.g., `/tmp/skill_name_step_1.py`)
+  - `content`/`command`: The actual code/command
+  - `timeout`: Execution timeout
 - `parameters`: JSON string defining extractable parameters
 
-Skill execution returns a delegation plan for main-agent to execute step-by-step.
+### Delete Operations Routing
+
+- **Graph data** (nodes, relationships) → neo4j-graph-management-agent (Skills auto-protected)
+- **Skills** → skill-manager-agent (only agent that can delete Skills)
 
 ## File Descriptions
 
-- `main-agent` - Orchestrator prompt with routing logic, file-metadata detection, and response formatting rules
-- `neo4j-management-agent` - Neo4j operations using parameterized Python scripts with argparse
+- `main-agent` - Orchestrator prompt with routing logic, file-metadata detection, response formatting, and **skill planning** (V4)
+- `neo4j-management-agent` - Neo4j operations using parameterized Python scripts, **delete operations with Skills protection** (V4)
 - `cybersecurity-agent` - Kali MCP command execution with mandatory verification pattern
 - `research-analysis-agent` - Web search agent (same content as cybersecurity-agent in current state)
 - `files-retrieving-agent` - Qdrant vector search with similarity scoring and blueprint isolation
-- `skill-manager-agent` - Skill lifecycle management (create, detect, execute, list, update, delete)
+- `skill-manager-agent` - **Storage-only** skill agent (V4): stores pre-planned workflows, returns them for execution
 
 ## Common Patterns
 
@@ -100,3 +117,17 @@ kali_mcp:execute_command("test -f /tmp/script.sh && echo 'VERIFIED' || echo 'FAI
 - Keep transparency requirements for neo4j-agent and skill-manager-agent (show full scripts)
 - Respect the single-execution rule for cybersecurity-agent (max 2 tool calls: command + verify)
 - Test routing logic changes against the file-metadata detection flow in main-agent
+- **V4 skill workflow**: main-agent plans skills (writes code), skill-agent only stores
+- **V4 delete routing**: neo4j-agent handles deletes BUT must protect Skills; skill-agent handles skill deletion
+
+## V4 Changes Summary
+
+Key changes in version 4:
+
+1. **Skill planning moved to main-agent**: Main-agent now plans entire workflows including Python scripts and bash commands. Skill-manager-agent is purely a storage agent.
+
+2. **Filename field required in skills**: Every step in `workflow_template` must include a `filename` field so main-agent knows where to write and execute scripts.
+
+3. **Skills protection in neo4j-agent**: All delete operations in neo4j-management-agent automatically exclude Skills with `WHERE NOT n:Skill`. Only skill-manager-agent can delete Skills.
+
+4. **Stronger anti-hallucination in skill-agent**: Skill-manager-agent must call Neo4j-ExecutePythonQuery IMMEDIATELY - no narration, no verification loops, ONE tool call per operation.
