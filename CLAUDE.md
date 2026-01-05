@@ -66,12 +66,18 @@ When `file-metadata_*` is detected in user message:
 Workflow:
 1. User requests skill creation
 2. **Main-agent** plans the workflow, shows user for approval
-3. User approves the plan
-4. **Main-agent** (via cybersecurity-agent) writes ALL files to disk:
+3. User approves (says "yes", "create", "do it", etc.)
+4. **PHASE 1 - Write Files** (via cybersecurity-agent):
    - Step scripts: `/tmp/skill_<name>_step_N.py` or `.sh`
-   - **Metadata JSON:** `/tmp/skill_<name>_metadata.json` ← NEW!
-5. Main-agent sends **just the metadata file path** to skill-manager-agent
-6. **Skill-manager-agent** reads JSON file from disk, stores skill in Neo4j
+   - Metadata JSON: `/tmp/skill_<name>_metadata.json`
+   - Report: "✓ Files created successfully"
+5. **PHASE 2 - Store Skill** (via skill-manager-agent):
+   - Send metadata file path
+   - skill-agent reads JSON, stores in Neo4j
+   - Report: "✓ Skill stored with ID: skill-xxx"
+6. Final confirmation: "✅ Skill 'Name' created successfully!"
+
+**CRITICAL:** Both phases happen automatically after approval - don't stop after Phase 1!
 
 **Metadata JSON file structure:**
 ```json
@@ -174,7 +180,18 @@ kali_mcp:execute_command("cat > /tmp/script.py << 'EOF'
 # script content
 EOF
 test -f /tmp/script.py && echo 'VERIFIED' || echo 'FAILED'")
+
+# For JSON files:
+kali_mcp:execute_command("cat > /tmp/metadata.json << 'EOF'
+{"name": "example", "value": 123}
+EOF
+test -f /tmp/metadata.json && echo 'VERIFIED' || echo 'FAILED'")
 ```
+
+**CRITICAL - `cat >` vs `cat`:**
+- `cat > /tmp/file << 'EOF'` = **WRITE** (creates file with heredoc content)
+- `cat /tmp/file` = **READ** (prints file content, FAILS if file doesn't exist)
+- ALWAYS use `cat >` with `>` redirect to CREATE files!
 
 ## When Editing These Prompts
 
@@ -195,7 +212,7 @@ Key changes in version 5:
 
 2. **Fixes "dictionary update sequence" error**: The V4 approach of embedding JSON in Python scripts caused escaping corruption. V5 uses `json.load(file)` which never has escaping issues.
 
-3. **Automatic file creation after approval**: When user says "create it", main-agent automatically writes ALL files (step scripts + metadata.json) before calling skill-manager-agent.
+3. **Full skill creation after approval**: When user approves (says "yes", "create", etc.), main-agent automatically: (1) writes ALL files, (2) calls skill-manager-agent to store in Neo4j, (3) reports completion. Both phases happen automatically.
 
 4. **Simpler skill-agent protocol**: Main-agent sends just the metadata file path. Skill-agent reads JSON from disk, stores in Neo4j. No parsing embedded strings.
 

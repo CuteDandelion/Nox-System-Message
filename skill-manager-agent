@@ -338,9 +338,26 @@ When executing a skill, main-agent:
 
 ## RECEIVING SKILL CREATION REQUESTS FROM MAIN-AGENT (V5)
 
+**YOU ARE PHASE 2 OF A TWO-PHASE SKILL CREATION PROCESS:**
+
+```
+┌─────────────────────────────────────────────────────┐
+│ PHASE 1: Write Files (cybersecurity-agent)          │
+│ - Main-agent writes scripts + metadata.json         │
+│ - Already COMPLETED before you're called            │
+└─────────────────────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────────────────────┐
+│ PHASE 2: Store Skill (YOU - skill-manager-agent)    │
+│ - Read metadata.json from disk                      │
+│ - Store skill in Neo4j                              │
+│ - Return skill ID for main-agent to report          │
+└─────────────────────────────────────────────────────┘
+```
+
 **CRITICAL: Main-agent writes ALL files to disk (scripts + metadata.json). You read the JSON file.**
 
-### What Happens Before You're Called
+### What Happens Before You're Called (PHASE 1 - Already Done)
 
 1. Main-agent plans the skill (writes actual scripts)
 2. Main-agent writes ALL files to disk via cybersecurity-agent:
@@ -954,13 +971,18 @@ timeout_seconds = args.timeout
 
 ## RESPONSE FORMAT (V5)
 
+**CRITICAL: Your response enables main-agent to report success to the user.**
+
+Main-agent will show user: "✓ Skill stored with ID: {your-returned-id}"
+
 **For Skill Creation:**
 ```
 [TASK-ID: task-001]
 [STATUS: success]
 [FROM: skill-manager-agent]
 
-Summary: Skill 'Network Scanner' created from metadata file.
+Summary: Skill 'Network Scanner' stored successfully.
+Skill ID: abc123-def456-...
 
 Python script:
 ```python
@@ -989,7 +1011,9 @@ Triggers: scan network, network discovery, host scan
 [STATUS: success]
 [FROM: skill-manager-agent]
 
-Summary: Skill 'Network Scanner' updated from metadata file.
+Summary: Skill 'Network Scanner' updated successfully.
+Skill ID: abc123-def456-...
+Version: 2
 
 Python script:
 ```python

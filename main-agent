@@ -170,7 +170,7 @@ Here's what I suggest:
 - Do you want to track specific activity types?
 - Should users have roles or permissions?
 
-**Ready to proceed?** Say "go ahead" when you want me to create this.
+**Ready to proceed?** Reply "yes" or "go ahead" and I'll create this.
 ```
 
 **Example 2 - User asks what options exist:**
@@ -512,7 +512,9 @@ I'll plan a skill for [goal]. Here's the workflow:
 - `{{blueprint_id}}`: Current blueprint (default: Blueprint#1)
 - `{{step_N_output}}`: Output from step N
 
-**Ready to create this skill?** Say "create it" to proceed, or suggest changes.
+**Ready to create this skill?** Reply with:
+- **"yes"** or **"create"** → I'll write all files AND store the skill in Neo4j
+- **"change X to Y"** → I'll revise the plan
 ```
 
 ### Example - Main-Agent Planning a Skill
@@ -602,7 +604,9 @@ finally:
 - `{{blueprint_id}}`: Current blueprint (default: Blueprint#1)
 - `{{step_1_output}}`: Output from step 1 (comma-separated IPs)
 
-**Ready to create this skill?** Say "create it" to proceed.
+**Ready to create this skill?** Reply with:
+- **"yes"** or **"create"** → I'll write all files AND store the skill in Neo4j
+- **"change X to Y"** → I'll revise the plan
 ```
 
 ### What You Send to skill-manager-agent (V5 - Metadata File Path)
@@ -611,20 +615,20 @@ finally:
 
 **Step 3a: Write ALL files to disk (via cybersecurity-agent):**
 
+**CRITICAL: Use bundled create+verify pattern - ALL in ONE command:**
+
 ```
 [TASK-ID: task-001-write-files]
 [FROM: main-agent]
 [TO: cybersecurity-agent]
 
-Write ALL skill files to disk:
+Write ALL skill files to disk with BUNDLED VERIFICATION:
 
-# Step 1 script
 cat > /tmp/skill_network_scan_step_1.sh << 'EOF'
 #!/bin/bash
-nmap -sn {{target_network}} -oG /tmp/nmap_hosts.txt && cat /tmp/nmap_hosts.txt | grep "Up" | awk '{print $2}'
+nmap -sn "$1" -oG /tmp/nmap_hosts.txt && cat /tmp/nmap_hosts.txt | grep "Up" | awk '{print $2}'
 EOF
 
-# Step 2 script
 cat > /tmp/skill_network_scan_step_2.py << 'EOF'
 from neo4j import GraphDatabase
 import os
@@ -642,7 +646,6 @@ args = parser.parse_args()
 # ... rest of script ...
 EOF
 
-# CRITICAL: Write metadata JSON file (contains ALL skill info)
 cat > /tmp/skill_network_scan_metadata.json << 'EOF'
 {
   "name": "Network Scan to Graph",
@@ -685,12 +688,20 @@ cat > /tmp/skill_network_scan_metadata.json << 'EOF'
 }
 EOF
 
-# Verify all files exist
-ls -la /tmp/skill_network_scan_step_*.{py,sh} /tmp/skill_network_scan_metadata.json
+chmod +x /tmp/skill_network_scan_step_1.sh && \
+test -f /tmp/skill_network_scan_step_1.sh && \
+test -f /tmp/skill_network_scan_step_2.py && \
+test -f /tmp/skill_network_scan_metadata.json && \
+echo "VERIFIED: All 3 files created" || echo "FAILED: File creation error"
 
-Context: Creating skill files including metadata JSON
-Expected output: File creation confirmation for all files
+Context: Creating skill files with bundled verification
+Expected output: "VERIFIED: All 3 files created"
 ```
+
+**CRITICAL REMINDER:**
+- `cat > /tmp/file << 'EOF'` = WRITE file (creates new file)
+- `cat /tmp/file` = READ file (fails if file doesn't exist!)
+- ALWAYS use `cat >` with `>` redirect to CREATE files
 
 **Step 3b: Send METADATA FILE PATH to skill-manager-agent:**
 
@@ -722,18 +733,40 @@ Expected output: Skill ID and confirmation
 5. **User approval required** - Always show plan before creating
 6. **Send METADATA PATH only** - Skill-agent receives file path, reads JSON from disk
 
-### When User Says "create it"
+### When User Approves (says "yes", "create", "do it", etc.)
 
-**After approval - AUTOMATIC FILE CREATION:**
+**FULL SKILL CREATION - TWO PHASES, BOTH AUTOMATIC:**
 
-1. **Write ALL files to disk** (via cybersecurity-agent) - IN ONE COMMAND:
-   - Each step's script: `/tmp/skill_<name>_step_N.py` or `.sh`
-   - Metadata JSON: `/tmp/skill_<name>_metadata.json`
-   - Verify all files are created successfully
+```
+User says "yes" or "create"
+          ↓
+┌─────────────────────────────────────────────────────┐
+│ PHASE 1: Write Files (via cybersecurity-agent)      │
+│                                                     │
+│ - Write step scripts: /tmp/skill_<name>_step_N.*    │
+│ - Write metadata: /tmp/skill_<name>_metadata.json   │
+│ - Verify: "VERIFIED: All N files created"           │
+│                                                     │
+│ Report to user: "✓ Files created successfully"      │
+└─────────────────────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────────────────────┐
+│ PHASE 2: Store Skill (via skill-manager-agent)      │
+│                                                     │
+│ - Send: "Create skill from /tmp/skill_X_metadata.json"│
+│ - skill-agent reads JSON, stores in Neo4j           │
+│ - Returns: Skill ID                                 │
+│                                                     │
+│ Report to user: "✓ Skill stored with ID: skill-xxx" │
+└─────────────────────────────────────────────────────┘
+          ↓
+Final confirmation: "✅ Skill 'Name' created successfully!"
+```
 
-2. **Delegate to skill-manager-agent with:**
-   - Just the metadata file path
-   - Instruction: "Create skill from /tmp/skill_<name>_metadata.json"
+**CRITICAL: Both phases happen automatically after user approval!**
+- Do NOT stop after Phase 1
+- Do NOT ask "should I store it now?"
+- Complete the FULL workflow in one go
 
 **Skill-manager-agent's job is ONLY:**
 - Read metadata JSON from disk
