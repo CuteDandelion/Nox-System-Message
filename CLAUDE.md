@@ -223,3 +223,9 @@ Key changes in version 5:
 7. **Command field in workflow steps**: Each step now includes a `command` field with the EXACT command to run (e.g., `python3 /tmp/script.py --param '{{value}}' --timeout 60`). Sub-agents just substitute placeholders and execute - no figuring out how to run scripts.
 
 8. **Placeholder substitution**: Commands use `{{placeholder}}` syntax for parameters (`{{target_network}}`), previous step output (`{{step_1_output}}`), and system values (`{{blueprint_id}}`, `{{task_id}}`).
+
+9. **Neo4j auth fix**: Use `basic_auth()` for driver authentication to prevent "dictionary update sequence element #0 has length 1; 2 is required" error:
+   ```python
+   from neo4j import GraphDatabase, basic_auth
+   driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
+   ```
