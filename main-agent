@@ -1812,45 +1812,108 @@ skill-manager-agent returns:
 }
 ```
 
-**Your execution (use command field directly):**
+**Your execution (use EXACT delegation format below):**
+
+### CRITICAL: Skill Step Delegation Format
+
+**For neo4j-graph-management-agent steps:**
 ```
-Step 1: Delegate to neo4j-graph-management-agent
-  [TASK-ID: task-001-step-1]
-  [TO: neo4j-graph-management-agent]
+[TASK-ID: task-001-step-1]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: neo4j-graph-management-agent]
 
-  Execute command (substitute placeholders):
-  python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
 
-  → Wait for result
+Command: python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
 
-Step 2: Delegate to neo4j-graph-management-agent
-  [TASK-ID: task-001-step-2]
-  [TO: neo4j-graph-management-agent]
+Context: Step 1 of skill "KPI Dashboard Generator"
+Expected output: Script execution result (just run the command, don't write new code)
+```
 
-  Execute command:
-  python3 /tmp/skill_kpi_dashboard_step_2.py --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-2'
+**For cybersecurity-agent steps:**
+```
+[TASK-ID: task-001-step-3]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: cybersecurity-agent]
 
-  → Wait for result
-  → Store output as "kpi_data"
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
 
-Step 3: Delegate to cybersecurity-agent
-  [TASK-ID: task-001-step-3]
-  [TO: cybersecurity-agent]
+Command: bash /tmp/skill_kpi_dashboard_step_3.sh '{"users": 45, "sessions": 120}'
 
-  Execute command (substitute kpi_data from step 2):
-  bash /tmp/skill_kpi_dashboard_step_3.sh '[output from step 2]'
+Context: Step 3 of skill "KPI Dashboard Generator"
+Expected output: Script execution result (just run the command)
+```
 
-  → Wait for result
+### Full Execution Example
 
-Step 4: Delegate to cybersecurity-agent
-  [TASK-ID: task-001-step-4]
-  [TO: cybersecurity-agent]
+```
+Step 1: Send to neo4j-graph-management-agent
+─────────────────────────────────────────────
+[TASK-ID: task-001-step-1]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: neo4j-graph-management-agent]
 
-  Execute command:
-  bash /tmp/skill_kpi_dashboard_step_4.sh
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
 
-  → Wait for result
-  → Present final output to user
+Command: python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+
+Context: Step 1 of skill "KPI Dashboard Generator"
+Expected output: Script execution result
+
+→ Wait for result
+
+Step 2: Send to neo4j-graph-management-agent
+─────────────────────────────────────────────
+[TASK-ID: task-001-step-2]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: neo4j-graph-management-agent]
+
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+Command: python3 /tmp/skill_kpi_dashboard_step_2.py --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-2'
+
+Context: Step 2 of skill "KPI Dashboard Generator"
+Expected output: KPI data JSON
+
+→ Wait for result
+→ Store output as "kpi_data"
+
+Step 3: Send to cybersecurity-agent
+───────────────────────────────────
+[TASK-ID: task-001-step-3]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: cybersecurity-agent]
+
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+Command: bash /tmp/skill_kpi_dashboard_step_3.sh '{"users": 45, "sessions": 120}'
+
+Context: Step 3 of skill "KPI Dashboard Generator"
+Expected output: HTML file created
+
+→ Wait for result
+
+Step 4: Send to cybersecurity-agent
+───────────────────────────────────
+[TASK-ID: task-001-step-4]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: cybersecurity-agent]
+
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+Command: bash /tmp/skill_kpi_dashboard_step_4.sh
+
+Context: Step 4 of skill "KPI Dashboard Generator"
+Expected output: Dashboard content
+
+→ Wait for result
+→ Present final output to user
 ```
 
 **CRITICAL RULES for Skill Execution:**

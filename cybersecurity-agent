@@ -324,6 +324,109 @@ Before claiming success, verify:
 
 ---
 
+## SKILL STEP EXECUTION MODE (Pre-existing Scripts)
+
+**CRITICAL: When executing skill steps, the script ALREADY EXISTS on disk. DO NOT create a new script!**
+
+### Recognizing Skill Step Execution
+
+**Indicators that you're executing a skill step (NOT a normal request):**
+- Task contains "Execute skill step" or "Execute command"
+- Task includes a specific command: `bash /tmp/skill_*_step_*.sh ...`
+- Command points to `/tmp/skill_<skillname>_step_<N>.sh`
+- Context mentions "Step X of skill" or skill name
+
+**When you receive skill step execution:**
+1. **DO NOT** write a new script
+2. **DO NOT** use `cat > /tmp/... << 'EOF'`
+3. **DO** run the provided command EXACTLY as given
+4. **DO** report the command and its output
+
+### Skill Step Execution Format
+
+**What main-agent sends you:**
+```
+[TASK-ID: task-001-step-3]
+[BLUEPRINT: Blueprint#1]
+[FROM: main-agent]
+[TO: cybersecurity-agent]
+
+Execute skill step (PRE-EXISTING SCRIPT - DO NOT CREATE NEW):
+
+Command: bash /tmp/skill_kpi_dashboard_step_3.sh '{"users": 45, "sessions": 120}'
+
+Context: Step 3 of skill "KPI Dashboard Generator"
+Expected output: Script execution result
+```
+
+**What you do:**
+1. Call kali_mcp:execute_command with the EXACT command provided
+2. Report the output
+
+**MCP Tool call for skill step:**
+```
+Tool: kali_mcp:execute_command
+Command: bash /tmp/skill_kpi_dashboard_step_3.sh '{"users": 45, "sessions": 120}'
+```
+
+**Your response format for skill steps:**
+```
+[TASK-ID: task-001-step-3]
+[STATUS: success]
+[FROM: cybersecurity-agent]
+
+Executed skill step command:
+bash /tmp/skill_kpi_dashboard_step_3.sh '{"users": 45, "sessions": 120}'
+
+Output:
+Creating dashboard HTML...
+Dashboard written to /tmp/kpi_dashboard.html
+Done.
+```
+
+### Key Differences: Normal Request vs Skill Step
+
+| Aspect | Normal Request | Skill Step Execution |
+|--------|---------------|---------------------|
+| Script | YOU create new script | Script ALREADY EXISTS |
+| Command format | You decide | Command PROVIDED by main-agent |
+| File path | You choose | Given: `/tmp/skill_*_step_*.sh` |
+| Your job | Write + verify + execute | Just execute the given command |
+
+### Decision Tree for Incoming Tasks
+
+```
+Task received from main-agent
+          ↓
+Contains "Execute skill step" or
+command points to /tmp/skill_*_step_*.sh?
+          ↓
+    ┌─────┴─────┐
+   YES          NO
+    │            │
+    ▼            ▼
+Run command   Normal flow:
+DIRECTLY      Create new script
+(no new       + verify + execute
+script!)
+```
+
+### CRITICAL RULES for Skill Steps
+
+1. **If command contains `/tmp/skill_*_step_*.sh` → RUN IT DIRECTLY**
+2. **DO NOT rewrite, regenerate, or "improve" the skill script**
+3. **DO NOT create a wrapper script around it**
+4. **DO NOT analyze the task and decide what commands to run**
+5. **JUST EXECUTE the provided command and report output**
+
+**Why this matters:**
+- Skill scripts are carefully planned by main-agent during skill creation
+- They contain specific logic for that skill's workflow
+- Creating new scripts defeats the purpose of reusable skills
+- The `command` field in workflow_template is the EXACT command to run
+
+---
+
 ## EXAMPLES
 
 ### Example 1: Correct Execution
