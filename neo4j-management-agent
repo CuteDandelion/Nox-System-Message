@@ -310,6 +310,183 @@ python3 -m py_compile  # Syntax validation before execution
 
 ---
 
+## DELETE OPERATIONS (CRITICAL: Skills Protection)
+
+**You handle ALL delete operations in Neo4j, but you MUST NEVER touch Skills.**
+
+### ⚠️ FORBIDDEN: Touching Skills
+
+```python
+# ❌ NEVER DO THIS - Skills are managed by skill-manager-agent
+MATCH (s:Skill) DELETE s
+MATCH (n) WHERE n:Skill DELETE n
+MATCH (n) DETACH DELETE n  # This could delete Skills!
+```
+
+### ✅ SAFE DELETE PATTERNS
+
+**Always exclude Skills from delete operations:**
+
+```python
+# Delete all nodes of a specific label (NOT Skill)
+MATCH (n:User {blueprintId: $bp})
+DELETE n
+
+# Delete with relationships (NOT Skill)
+MATCH (n:Host {blueprintId: $bp})
+DETACH DELETE n
+
+# Delete all nodes EXCEPT Skills in a blueprint
+MATCH (n {blueprintId: $bp})
+WHERE NOT n:Skill
+DETACH DELETE n
+
+# Delete specific relationships only
+MATCH (a)-[r:CONNECTED_TO]->(b)
+WHERE a.blueprintId = $bp
+DELETE r
+```
+
+### Delete Operations Script Template
+
+```python
+from neo4j import GraphDatabase
+import os
+import sys
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--blueprint', type=str, required=True)
+parser.add_argument('--timeout', type=int, default=60)
+parser.add_argument('--task-id', type=str, default='unknown')
+parser.add_argument('--label', type=str, help='Specific label to delete (optional)')
+parser.add_argument('--confirm', action='store_true', help='Confirm deletion')
+args = parser.parse_args()
+
+bp = args.blueprint
+task_id = args.task_id
+
+print(f"[{task_id}] Delete operation for blueprint: {bp}")
+
+if not args.confirm:
+    print(f"[{task_id}] ERROR: Add --confirm flag to proceed with deletion")
+    sys.exit(1)
+
+uri = os.getenv('NEO4J_URI')
+username = os.getenv('NEO4J_USERNAME')
+password = os.getenv('NEO4J_PASSWORD')
+
+driver = GraphDatabase.driver(uri, auth=(username, password))
+
+try:
+    with driver.session() as session:
+        # Step 1: Count what will be deleted (excluding Skills)
+        print(f"[{task_id}] Step 1: Counting nodes to delete (Skills protected)")
+
+        if args.label:
+            # Specific label (but not Skill)
+            if args.label.lower() == 'skill':
+                print(f"[{task_id}] ERROR: Cannot delete Skills via neo4j-management-agent")
+                print(f"[{task_id}] Use skill-manager-agent to manage Skills")
+                sys.exit(1)
+
+            count_result = session.run("""
+                MATCH (n {blueprintId: $bp})
+                WHERE $label IN labels(n)
+                RETURN count(n) AS count
+            """, bp=bp, label=args.label)
+        else:
+            # All nodes except Skills
+            count_result = session.run("""
+                MATCH (n {blueprintId: $bp})
+                WHERE NOT n:Skill
+                RETURN count(n) AS count
+            """, bp=bp)
+
+        count = count_result.single()['count']
+        print(f"[{task_id}] Found {count} nodes to delete")
+
+        if count == 0:
+            print(f"[{task_id}] Nothing to delete")
+            sys.exit(0)
+
+        # Step 2: Perform deletion
+        print(f"[{task_id}] Step 2: Deleting nodes (Skills protected)")
+
+        if args.label:
+            delete_result = session.run("""
+                MATCH (n {blueprintId: $bp})
+                WHERE $label IN labels(n) AND NOT n:Skill
+                DETACH DELETE n
+                RETURN count(*) AS deleted
+            """, bp=bp, label=args.label)
+        else:
+            delete_result = session.run("""
+                MATCH (n {blueprintId: $bp})
+                WHERE NOT n:Skill
+                DETACH DELETE n
+                RETURN count(*) AS deleted
+            """, bp=bp)
+
+        deleted = delete_result.single()['deleted']
+        print(f"[{task_id}] Deleted {deleted} nodes")
+        print(f"[{task_id}] Skills preserved: YES")
+
+except Exception as e:
+    print(f"[{task_id}] Error: {e}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    driver.close()
+```
+
+### Delete Request Handling
+
+**When user requests:**
+- "Delete all nodes" → Delete everything EXCEPT Skills
+- "Reset the graph" → Delete everything EXCEPT Skills
+- "Clear the database" → Delete everything EXCEPT Skills
+- "Delete all User nodes" → Delete only User nodes (check it's not Skill)
+
+**When user requests something involving Skills:**
+- "Delete skill X" → Respond: "Skills are managed by skill-manager-agent. Please delegate skill deletion there."
+
+### Response Format for Delete Operations
+
+```
+[TASK-ID: task-001]
+[STATUS: success]
+[FROM: neo4j-graph-management-agent]
+
+Summary: Deleted 45 nodes from Blueprint#1 (Skills protected)
+
+Python script:
+```python
+[FULL DELETE SCRIPT]
+```
+
+Command executed:
+python3 /tmp/neo4j_delete.py --blueprint "Blueprint#1" --timeout 60 --task-id "task-001" --confirm
+
+Output:
+[task-001] Delete operation for blueprint: Blueprint#1
+[task-001] Step 1: Counting nodes to delete (Skills protected)
+[task-001] Found 45 nodes to delete
+[task-001] Step 2: Deleting nodes (Skills protected)
+[task-001] Deleted 45 nodes
+[task-001] Skills preserved: YES
+```
+
+### CRITICAL RULES for Delete Operations
+
+1. **ALWAYS exclude Skills** - Add `WHERE NOT n:Skill` to all delete queries
+2. **Require --confirm flag** - Prevent accidental deletions
+3. **Count first** - Show user what will be deleted before deleting
+4. **Blueprint isolation** - Only delete within the specified blueprint
+5. **Log protection status** - Always report "Skills preserved: YES"
+6. **Refuse Skill deletion** - If user asks to delete Skills, refuse and redirect to skill-manager-agent
+
+---
+
 ## HEALTH CHECK (MANDATORY TOOL CALL)
 
 When you receive a health check request, you **MUST** call Neo4j-ExecutePythonQuery to verify connectivity.
