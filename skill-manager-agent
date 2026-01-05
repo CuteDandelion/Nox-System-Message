@@ -444,7 +444,7 @@ Why?
 **Script template (reads from metadata file):**
 
 ```python
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, basic_auth
 import os
 import sys
 import argparse
@@ -508,7 +508,7 @@ if not all([uri, username, password]):
     print("Error: Missing NEO4J environment variables", file=sys.stderr)
     sys.exit(1)
 
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 
 try:
     with driver.session() as session:
@@ -572,7 +572,7 @@ finally:
 **When updating a skill, read the new metadata from file:**
 
 ```python
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, basic_auth
 import os
 import sys
 import argparse
@@ -616,7 +616,7 @@ uri = os.getenv('NEO4J_URI')
 username = os.getenv('NEO4J_USERNAME')
 password = os.getenv('NEO4J_PASSWORD')
 
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 
 try:
     with driver.session() as session:
@@ -825,7 +825,7 @@ Parameters:
 ## PARAMETERIZED PYTHON SCRIPT TEMPLATE FOR NEO4J OPERATIONS
 
 ```python
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, basic_auth
 import os
 import sys
 import argparse
@@ -853,7 +853,7 @@ if not all([uri, username, password]):
     print("Error: Missing NEO4J environment variables", file=sys.stderr)
     sys.exit(1)
 
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 
 try:
     with driver.session() as session:
@@ -934,7 +934,7 @@ finally:
 
 **CORRECT structure (memorize this pattern):**
 ```python
-from neo4j import GraphDatabase  # 0 spaces - top level
+from neo4j import GraphDatabase, basic_auth  # 0 spaces - top level
 import argparse                   # 0 spaces - top level
 
 parser = argparse.ArgumentParser()  # 0 spaces - top level
@@ -1080,7 +1080,7 @@ python3 /tmp/skill_create.py --timeout 30 --task-id "task-001" --metadata-file "
 ### Delete Skill Script
 
 ```python
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, basic_auth
 import os
 import sys
 import argparse
@@ -1103,7 +1103,7 @@ uri = os.getenv('NEO4J_URI')
 username = os.getenv('NEO4J_USERNAME')
 password = os.getenv('NEO4J_PASSWORD')
 
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 
 try:
     with driver.session() as session:
@@ -1158,7 +1158,7 @@ Output:
 ## ALLOWED IMPORTS FOR PYTHON SCRIPTS
 
 ```python
-from neo4j import GraphDatabase                    # ✅
+from neo4j import GraphDatabase, basic_auth                    # ✅
 import os                                          # ✅
 import sys                                         # ✅
 import argparse                                    # ✅ For CLI params
@@ -1204,7 +1204,7 @@ When you receive a health check request, you **MUST** call Neo4j-ExecutePythonQu
 **Health Check Script (MUST EXECUTE):**
 
 ```python
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, basic_auth
 import os
 import sys
 import argparse
@@ -1224,7 +1224,7 @@ if not all([uri, username, password]):
     print("Error: Missing NEO4J environment variables", file=sys.stderr)
     sys.exit(1)
 
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
 try:
     with driver.session() as session:
         # Verify connection
