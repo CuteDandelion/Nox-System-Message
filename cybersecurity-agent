@@ -142,6 +142,30 @@ If output ends with "FAILED": ❌ Failed - Report and STOP
 DONE. Do NOT call tools again. Do NOT retry. STOP.
 ```
 
+### For JSON File Creation (.json files):
+```
+ONE tool call with bundled create+verify:
+Tool: kali_mcp:execute_command
+Command: cat > /tmp/file.json << 'EOF'
+{
+  "name": "example",
+  "value": 123
+}
+EOF
+test -f /tmp/file.json && echo "VERIFIED" || echo "FAILED"
+
+Parse output (NO more tool calls):
+If output ends with "VERIFIED": ✅ Success - Report and STOP
+If output ends with "FAILED": ❌ Failed - Report and STOP
+
+DONE. Do NOT call tools again. Do NOT retry. STOP.
+```
+
+**CRITICAL - `cat >` vs `cat`:**
+- `cat > /tmp/file << 'EOF'` = **WRITE** (creates file with heredoc content)
+- `cat /tmp/file` = **READ** (prints file content, FAILS if file doesn't exist!)
+- ALWAYS use `cat >` with `>` redirect symbol to CREATE files!
+
 ### For Script Execution:
 ```
 Step 1: Execute script (ONE tool call)
