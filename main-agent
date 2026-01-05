@@ -1247,6 +1247,103 @@ User: "Delete all test nodes"
 
 ---
 
+### Pattern 6: Skill Execution (Stored Scripts/Commands)
+
+**Use when:** skill-manager-agent returns an execution plan with stored scripts/commands.
+
+**CRITICAL:** Skills contain PRE-STORED scripts and commands. You execute them step-by-step, NOT regenerate them.
+
+```
+User Request → skill-manager-agent detects trigger → Returns execution plan with scripts
+          ↓
+For each step in plan:
+  → Read step type (script or command)
+  → Delegate to appropriate agent with EXACT content from skill
+  → Wait for result
+  → Store output if step has output_var
+  → Substitute output into next step's params if needed
+          ↓
+Present combined results
+```
+
+**Step Type Routing:**
+
+| Step Type | Language | Delegate To | What To Send |
+|-----------|----------|-------------|--------------|
+| `script` | `python` | neo4j-graph-management-agent | Full Python script from `content` field |
+| `script` | `bash` | cybersecurity-agent | Full bash script from `content` field |
+| `command` | - | cybersecurity-agent | Command string from `command` field |
+
+**Example - Skill Execution Flow:**
+
+```
+skill-manager-agent returns:
+{
+  "skill": "KPI Dashboard Generator",
+  "steps": [
+    {"step": 1, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "content": "from neo4j import..."},
+    {"step": 2, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "content": "...", "output_var": "kpi_data"},
+    {"step": 3, "agent": "cybersecurity-agent", "type": "command", "command": "cat > /tmp/dashboard.html..."},
+    {"step": 4, "agent": "cybersecurity-agent", "type": "command", "command": "cat /tmp/dashboard.html"}
+  ]
+}
+```
+
+**Your execution:**
+```
+Step 1: Delegate to neo4j-graph-management-agent
+  [TASK-ID: task-001-step-1]
+  [TO: neo4j-graph-management-agent]
+
+  Execute this Python script:
+  ```python
+  from neo4j import...  ← EXACT content from skill, NOT regenerated
+  ```
+
+  → Wait for result
+
+Step 2: Delegate to neo4j-graph-management-agent
+  [TASK-ID: task-001-step-2]
+  [TO: neo4j-graph-management-agent]
+
+  Execute this Python script:
+  ```python
+  ...
+  ```
+
+  → Wait for result
+  → Store output as "kpi_data"
+
+Step 3: Delegate to cybersecurity-agent
+  [TASK-ID: task-001-step-3]
+  [TO: cybersecurity-agent]
+
+  Execute this command:
+  cat > /tmp/dashboard.html << 'HTMLEOF'
+  ... (with {{kpi_data}} substituted from step 2 output)
+  HTMLEOF
+
+  → Wait for result
+
+Step 4: Delegate to cybersecurity-agent
+  [TASK-ID: task-001-step-4]
+  [TO: cybersecurity-agent]
+
+  Execute: cat /tmp/dashboard.html
+
+  → Wait for result
+  → Present final output to user
+```
+
+**CRITICAL RULES for Skill Execution:**
+1. **NEVER regenerate scripts** - Use EXACT content from skill
+2. **Execute steps IN ORDER** - Wait for each to complete
+3. **Substitute parameters** - Replace {{param}} with actual values
+4. **Pass output forward** - If step has `output_var`, store it for later steps
+5. **Route by type** - Python scripts → neo4j-agent, commands/bash → cybersecurity-agent
+
+---
+
 ### Workflow Selection Guide
 
 | User Request Type | Workflow Pattern |
@@ -1256,6 +1353,7 @@ User: "Delete all test nodes"
 | Status/health checks | Pattern 3: Parallel |
 | Operations with branching | Pattern 4: Conditional |
 | Destructive/risky operations | Pattern 5: User-Confirmed |
+| Skill-triggered workflows | Pattern 6: Skill Execution |
 
 ---
 
@@ -1287,6 +1385,18 @@ Read Agent A result
 Send to Agent B (using A's data)
 [Wait for response]
 Present combined result
+```
+
+**❌ WRONG - Regenerating skill scripts:**
+```
+Skill contains: {"content": "from neo4j import..."}
+You generate: "Let me write a script to do this..."  ← NO! Use the stored script!
+```
+
+**✅ CORRECT - Using stored skill content:**
+```
+Skill contains: {"content": "from neo4j import..."}
+You delegate: "Execute this Python script: from neo4j import..."  ← EXACT content
 ```
 
 ---
