@@ -238,13 +238,16 @@ driver = GraphDatabase.driver(uri, auth=(username, password))
 try:
     with driver.session() as session:
         # Step 1: Check for existing skill (discovery)
+        # NOTE: Use OPTIONAL MATCH to handle empty database (returns row with exists=false)
+        # Regular MATCH returns None when no skill exists, causing errors
         print(f"[{task_id}] Step 1: Checking for existing skill")
         check_result = session.run("""
-            MATCH (s:Skill {name: $name})
+            OPTIONAL MATCH (s:Skill {name: $name})
             RETURN s IS NOT NULL AS exists
         """, name='Example Skill')
-        
-        if check_result.single()['exists']:
+
+        record = check_result.single()
+        if record and record['exists']:
             print(f"[{task_id}] Error: Skill already exists", file=sys.stderr)
             sys.exit(1)
         
