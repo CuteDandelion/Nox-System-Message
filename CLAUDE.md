@@ -57,34 +57,83 @@ When `file-metadata_*` is detected in user message:
 | files-retrieving-agent | qdrant-retrieve | Vector DB document retrieval |
 | skill-manager-agent | Neo4j-ExecutePythonQuery | Skill CRUD in Neo4j |
 
-### Skills System (V4 - Main-Agent Plans & Writes Files, Skill-Agent Stores Filenames)
+### Skills System (V5 - Disk-Based Metadata JSON)
 
-**Key change in V4:** Main-agent plans workflows AND writes script files to disk. Skill-manager-agent only stores filenames (not script content).
+**Key change in V5:** Main-agent writes ALL files to disk including a `metadata.json` file. Skill-manager-agent reads from the JSON file (no embedded JSON in scripts - this fixes escaping bugs).
+
+**The V4 "dictionary update sequence" error was caused by:** Embedding JSON in Python scripts led to escaping corruption. V5 solves this by reading JSON from disk with `json.load()`.
 
 Workflow:
 1. User requests skill creation
-2. **Main-agent** plans the workflow, writes actual scripts to `/tmp/skill_<name>_step_N.py`
+2. **Main-agent** plans the workflow, shows user for approval
 3. User approves the plan
-4. Main-agent sends workflow_template with **filenames only** to skill-manager-agent
-5. **Skill-manager-agent** stores workflow_template (embeds JSON in script, not CLI parameter)
+4. **Main-agent** (via cybersecurity-agent) writes ALL files to disk:
+   - Step scripts: `/tmp/skill_<name>_step_N.py` or `.sh`
+   - **Metadata JSON:** `/tmp/skill_<name>_metadata.json` ← NEW!
+5. Main-agent sends **just the metadata file path** to skill-manager-agent
+6. **Skill-manager-agent** reads JSON file from disk, stores skill in Neo4j
 
-Skill nodes contain:
-- `triggers`: Keywords that auto-detect the skill
-- `workflow_template`: JSON string with steps, each containing:
-  - `agent`: Which sub-agent executes this step
-  - `type`: "script" or "command"
-  - `language`: "python" or "bash"
-  - `filename`: **REQUIRED** - path to script file (already exists on disk)
-  - `description`: Human-readable step description
-  - `params`: Parameters to substitute at execution time
-  - `timeout`: Execution timeout
-  - **NO `content` field** - script lives in the file
-- `parameters`: JSON string defining extractable parameters
-
-**Execution:** Main-agent reads filenames from workflow_template and executes directly:
-```bash
-python3 /tmp/skill_network_scan_step_1.py --target 192.168.1.0/24
+**Metadata JSON file structure:**
+```json
+{
+  "name": "Network Scanner",
+  "description": "Scans network and stores hosts",
+  "category": "Security",
+  "triggers": ["scan network", "network discovery"],
+  "parameters": {
+    "target_network": {"type": "string", "required": true}
+  },
+  "workflow_template": {
+    "steps": [
+      {
+        "step": 1,
+        "agent": "cybersecurity-agent",
+        "filename": "/tmp/skill_network_scanner_step_1.sh",
+        "command": "bash /tmp/skill_network_scanner_step_1.sh {{target_network}}",
+        "description": "Scan network for live hosts",
+        "params": ["target_network"],
+        "timeout": 120
+      },
+      {
+        "step": 2,
+        "agent": "neo4j-graph-management-agent",
+        "filename": "/tmp/skill_network_scanner_step_2.py",
+        "command": "python3 /tmp/skill_network_scanner_step_2.py --hosts '{{step_1_output}}' --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'",
+        "description": "Store hosts in Neo4j",
+        "params": ["hosts", "blueprint_id"],
+        "timeout": 60
+      }
+    ]
+  }
+}
 ```
+
+**Key fields in each step:**
+- `filename`: Path to script file on disk
+- `command`: **EXACT command to run** - sub-agents copy this, substitute `{{placeholders}}`, execute
+- `params`: Parameters referenced in command
+- `output_var`: (optional) Store output for use in later steps
+
+**Available placeholders:**
+- `{{param_name}}` - User-provided parameter
+- `{{step_N_output}}` - Output from step N
+- `{{blueprint_id}}` - Current blueprint (default: Blueprint#1)
+- `{{task_id}}` - Current task ID
+
+**Execution:** Main-agent reads `command` field, substitutes placeholders, executes:
+```bash
+# Original command in workflow_template:
+# "command": "bash /tmp/skill_network_scanner_step_1.sh {{target_network}}"
+
+# After substitution:
+bash /tmp/skill_network_scanner_step_1.sh 192.168.1.0/24
+```
+
+**Why disk-based metadata + command field works:**
+- `json.load(file)` NEVER has escaping issues
+- All skill data in one place (metadata.json)
+- Sub-agents don't need to figure out how to run scripts
+- Updates just overwrite files - same flow as create
 
 ### Delete Operations Routing
 
@@ -125,21 +174,26 @@ kali_mcp:execute_command("test -f /tmp/script.sh && echo 'VERIFIED' || echo 'FAI
 - Keep transparency requirements for neo4j-agent and skill-manager-agent (show full scripts)
 - Respect the single-execution rule for cybersecurity-agent (max 2 tool calls: command + verify)
 - Test routing logic changes against the file-metadata detection flow in main-agent
-- **V4 skill workflow**: main-agent plans skills (writes code), skill-agent only stores
-- **V4 delete routing**: neo4j-agent handles deletes BUT must protect Skills; skill-agent handles skill deletion
+- **V5 skill workflow**: main-agent plans skills, writes ALL files (steps + metadata.json), skill-agent reads from disk
+- **V5 delete routing**: neo4j-agent handles deletes BUT must protect Skills; skill-agent handles skill deletion
+- **V5 metadata pattern**: skill-agent receives file path, reads with `json.load()` - no embedded JSON in scripts
 
-## V4 Changes Summary
+## V5 Changes Summary
 
-Key changes in version 4:
+Key changes in version 5:
 
-1. **Skill planning AND file writing moved to main-agent**: Main-agent plans entire workflows AND writes actual script files to disk (`/tmp/skill_<name>_step_N.py`). Skill-manager-agent only stores filenames.
+1. **Disk-based metadata JSON**: Main-agent writes a `metadata.json` file containing ALL skill info (name, triggers, parameters, workflow_template). Skill-manager-agent reads from this file.
 
-2. **Filename-only workflow_template**: workflow_template stores ONLY filenames (not script content). The `content` field is removed. Scripts already exist on disk when skill is stored.
+2. **Fixes "dictionary update sequence" error**: The V4 approach of embedding JSON in Python scripts caused escaping corruption. V5 uses `json.load(file)` which never has escaping issues.
 
-3. **Embedded JSON in storage script**: Skill creation script embeds workflow JSON directly in the Python script (not as CLI parameter) to avoid escaping failures.
+3. **Automatic file creation after approval**: When user says "create it", main-agent automatically writes ALL files (step scripts + metadata.json) before calling skill-manager-agent.
 
-4. **Skills protection in neo4j-agent**: All delete operations in neo4j-management-agent automatically exclude Skills with `WHERE NOT n:Skill`. Only skill-manager-agent can delete Skills.
+4. **Simpler skill-agent protocol**: Main-agent sends just the metadata file path. Skill-agent reads JSON from disk, stores in Neo4j. No parsing embedded strings.
 
-5. **Stronger anti-hallucination in skill-agent**: Skill-manager-agent must call Neo4j-ExecutePythonQuery IMMEDIATELY - no narration, no verification loops, ONE tool call per operation.
+5. **Consistent update flow**: Updates just overwrite the files and call skill-agent with the same metadata file path. Same flow as create.
 
-6. **Direct file execution**: At skill execution time, main-agent runs files directly (`python3 /tmp/skill_name_step_1.py`) instead of extracting content from workflow_template.
+6. **Skills protection in neo4j-agent**: All delete operations automatically exclude Skills with `WHERE NOT n:Skill`. Only skill-manager-agent can delete Skills.
+
+7. **Command field in workflow steps**: Each step now includes a `command` field with the EXACT command to run (e.g., `python3 /tmp/script.py --param '{{value}}' --timeout 60`). Sub-agents just substitute placeholders and execute - no figuring out how to run scripts.
+
+8. **Placeholder substitution**: Commands use `{{placeholder}}` syntax for parameters (`{{target_network}}`), previous step output (`{{step_1_output}}`), and system values (`{{blueprint_id}}`, `{{task_id}}`).

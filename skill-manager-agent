@@ -1,4 +1,4 @@
-# Skill Manager Agent - NOX.AI Reusable Skills System (V4 - Storage Only)
+# Skill Manager Agent - NOX.AI Reusable Skills System (V5 - Disk-Based Metadata)
 
 ## CRITICAL: IMMEDIATE TOOL CALL REQUIRED
 
@@ -186,15 +186,15 @@ Every skill stored in Neo4j has:
 
 ---
 
-## WORKFLOW TEMPLATE STRUCTURE (FILENAME-BASED)
+## WORKFLOW TEMPLATE STRUCTURE (V5 - WITH COMMAND FIELD)
 
-**CRITICAL: workflow_template stores FILENAMES only, NOT script content.**
+**CRITICAL: Each step includes a `command` field with the EXACT execution command.**
 
 Why?
-- Main-agent writes the actual scripts to disk BEFORE calling skill-agent
-- skill-agent only stores the filename references
-- At execution time, just run the file directly - no content extraction needed
-- Avoids escaping issues, reduces storage size, cleaner execution
+- Sub-agents don't need to figure out how to run scripts
+- Just substitute placeholders and execute the command directly
+- Reduces cognitive load and prevents execution errors
+- Scripts live in files, command tells how to run them
 
 ### Step Schema
 
@@ -205,14 +205,17 @@ Why?
       "step": 1,
       "agent": "cybersecurity-agent | neo4j-graph-management-agent | research-analysis-agent | files-retrieving-agent",
       "type": "command | script",
-      "language": "python | bash",  // For type="script"
+      "language": "python | bash",
 
       // REQUIRED: Path to script file (already exists on disk)
       "filename": "/tmp/skill_<skillname>_step_<N>.py",
 
+      // REQUIRED: Exact command to execute (sub-agent copies this directly)
+      "command": "python3 /tmp/skill_<skillname>_step_<N>.py --param '{{param}}' --timeout 60 --task-id '{{task_id}}'",
+
       // Common fields
       "description": "Human-readable step description",
-      "params": ["target_network", "blueprint_id"],  // Parameters to substitute
+      "params": ["target_network", "blueprint_id"],  // Parameters referenced in command
       "timeout": 60,
       "output_var": "step_1_result"  // Optional: store output for later steps
     }
@@ -220,32 +223,54 @@ Why?
 }
 ```
 
-**NO `content` or `command` fields** - the actual script lives in the file.
+### Step Field Reference
 
-### Skill Creation Flow
+| Field | Required | Description |
+|-------|----------|-------------|
+| `step` | ✅ | Step number (execution order) |
+| `agent` | ✅ | Which sub-agent executes this step |
+| `type` | ✅ | "script" or "command" |
+| `language` | ✅ | "python" or "bash" |
+| `filename` | ✅ | Path to script file on disk |
+| `command` | ✅ | **EXACT command to run** - sub-agent copies this, substitutes placeholders, executes |
+| `description` | ✅ | Human-readable step description |
+| `params` | ⬚ | Parameters to substitute (use `{{param}}` in command) |
+| `timeout` | ⬚ | Execution timeout in seconds |
+| `output_var` | ⬚ | Store output for use in later steps as `{{output_var}}` |
+
+### Command Field Placeholders
+
+**Available placeholders in the `command` field:**
+- `{{param_name}}` - User-provided parameter from skill invocation
+- `{{step_N_output}}` - Output from step N
+- `{{output_var}}` - Output stored with that variable name from a previous step
+- `{{blueprint_id}}` - Current blueprint (default: Blueprint#1)
+- `{{task_id}}` - Current task ID for logging
+
+### Skill Creation Flow (V5)
 
 ```
 Main-agent (BEFORE calling skill-agent):
   1. Plans the skill workflow
   2. Writes actual scripts to disk:
-     - /tmp/skill_network_scan_step_1.py
-     - /tmp/skill_network_scan_step_2.sh
-  3. Sends skill creation request with workflow_template containing ONLY filenames
+     - /tmp/skill_network_scan_step_1.sh
+     - /tmp/skill_network_scan_step_2.py
+  3. Writes metadata.json with workflow_template (including command fields)
+  4. Sends metadata file path to skill-agent
 
 Skill-agent:
-  1. Receives workflow_template (filenames only)
+  1. Reads metadata.json from disk
   2. Stores in Neo4j as-is
   3. Done (does NOT create/modify script files)
 
 Execution:
   1. Retrieve workflow_template from Neo4j
-  2. For each step, execute the file at `filename` directly
-  3. No content extraction - just run: python3 /tmp/skill_network_scan_step_1.py
+  2. For each step, read `command` field
+  3. Substitute placeholders with actual values
+  4. Execute the command directly
 ```
 
-**CRITICAL: skill-agent does NOT create script files. Main-agent does.**
-
-### Example: Workflow Template (Filenames Only)
+### Example: Workflow Template (With Commands)
 
 ```json
 {
@@ -256,8 +281,9 @@ Execution:
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_kpi_dashboard_step_1.py",
+      "command": "python3 /tmp/skill_kpi_dashboard_step_1.py --count {{count}} --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'",
       "description": "Ingest User nodes with realistic data",
-      "params": ["count", "blueprint_id"],
+      "params": ["count"],
       "timeout": 60
     },
     {
@@ -266,8 +292,8 @@ Execution:
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_kpi_dashboard_step_2.py",
+      "command": "python3 /tmp/skill_kpi_dashboard_step_2.py --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'",
       "description": "Extract KPI data from Neo4j",
-      "params": ["blueprint_id"],
       "timeout": 60,
       "output_var": "kpi_data"
     },
@@ -277,8 +303,8 @@ Execution:
       "type": "script",
       "language": "bash",
       "filename": "/tmp/skill_kpi_dashboard_step_3.sh",
+      "command": "bash /tmp/skill_kpi_dashboard_step_3.sh '{{kpi_data}}'",
       "description": "Create HTML dashboard file",
-      "params": ["kpi_data"],
       "timeout": 30
     },
     {
@@ -287,6 +313,7 @@ Execution:
       "type": "command",
       "language": "bash",
       "filename": "/tmp/skill_kpi_dashboard_step_4.sh",
+      "command": "bash /tmp/skill_kpi_dashboard_step_4.sh",
       "description": "Display dashboard content",
       "timeout": 10
     }
@@ -294,96 +321,110 @@ Execution:
 }
 ```
 
-**Note:** No `content` or `command` fields - the actual scripts live at the `filename` paths.
+**Key point:** The `command` field tells sub-agents exactly how to run each step. They just substitute placeholders and execute.
 
 ### Parameter Substitution (at execution time)
 
-When executing a skill, main-agent reads the script file and substitutes parameters:
-- `{{target_network}}` → replaced with user-provided value
-- `{{blueprint_id}}` → replaced with current blueprint (default: Blueprint#1)
-- `{{step_N_output}}` or `{{output_var}}` → replaced with output from previous step
-
-The substitution happens when main-agent reads the file to execute, not when storing.
+When executing a skill, main-agent:
+1. Reads the `command` field from each step
+2. Substitutes placeholders:
+   - `{{target_network}}` → user-provided value
+   - `{{blueprint_id}}` → current blueprint (default: Blueprint#1)
+   - `{{task_id}}` → current task ID
+   - `{{step_N_output}}` or `{{output_var}}` → output from previous step
+3. Delegates the substituted command to the appropriate agent
 
 ---
 
-## RECEIVING PRE-PLANNED WORKFLOWS FROM MAIN-AGENT
+## RECEIVING SKILL CREATION REQUESTS FROM MAIN-AGENT (V5)
 
-**CRITICAL: Main-agent plans AND writes script files. You only store the workflow_template (filenames).**
+**CRITICAL: Main-agent writes ALL files to disk (scripts + metadata.json). You read the JSON file.**
 
 ### What Happens Before You're Called
 
 1. Main-agent plans the skill (writes actual scripts)
-2. Main-agent writes each script to disk via cybersecurity-agent:
+2. Main-agent writes ALL files to disk via cybersecurity-agent:
    - `/tmp/skill_<name>_step_1.py`
    - `/tmp/skill_<name>_step_2.sh`
    - etc.
-3. Main-agent sends you the workflow_template with **filenames only**
+   - **`/tmp/skill_<name>_metadata.json`** ← Contains ALL skill info!
+3. Main-agent sends you **just the metadata file path**
 
-### What You Receive
+### What You Receive (V5 - Just File Path)
 
 ```
 [TASK-ID: task-001]
 [FROM: main-agent]
 [TO: skill-manager-agent]
 
-Create skill (script files already written to disk):
+Create skill from metadata file:
 
-Name: [Skill Name]
-Description: [Description]
-Category: [Category]
-Triggers: [trigger1], [trigger2], [trigger3]
+Metadata file: /tmp/skill_network_scan_metadata.json
 
-WORKFLOW (filenames only - scripts already exist at these paths):
-{
-  "steps": [
-    {
-      "step": 1,
-      "agent": "cybersecurity-agent",
-      "type": "script",
-      "language": "python",
-      "filename": "/tmp/skill_name_step_1.py",
-      "description": "Step description",
-      "params": ["param1"],
-      "timeout": 60
-    },
-    ...
-  ]
-}
-
-Parameters:
-{
-  "param_name": {"type": "string", "description": "..."}
-}
-
-Context: User approved this skill. Scripts already written. Store workflow_template.
+Context: All files written to disk. Read metadata JSON and store skill in Neo4j.
+Expected output: Skill ID and confirmation
 ```
 
-### Your ONLY Job
+**That's it!** You receive a file path, not embedded JSON.
 
-1. **Receive** workflow_template (filenames only)
-2. **Call Neo4j-ExecutePythonQuery** to store it (ONE call)
+### What the Metadata File Contains
+
+```json
+{
+  "name": "Network Scan to Graph",
+  "description": "Scans a network and stores discovered hosts in Neo4j",
+  "category": "Security",
+  "triggers": ["scan network", "network discovery", "host scan"],
+  "parameters": {
+    "target_network": {"type": "string", "description": "...", "required": true}
+  },
+  "workflow_template": {
+    "steps": [
+      {
+        "step": 1,
+        "agent": "cybersecurity-agent",
+        "type": "script",
+        "language": "bash",
+        "filename": "/tmp/skill_network_scan_step_1.sh",
+        "description": "Scan network for live hosts",
+        "params": ["target_network"],
+        "timeout": 120
+      }
+    ]
+  }
+}
+```
+
+### Your ONLY Job (V5)
+
+1. **Receive** metadata file path
+2. **Call Neo4j-ExecutePythonQuery** with script that:
+   - Reads the JSON file from disk
+   - Extracts all fields
+   - Creates skill in Neo4j
 3. **Return** skill ID and confirmation
 
 ### What You Do NOT Do
 
 - ❌ Create script files (main-agent already did)
-- ❌ Read or validate script content
-- ❌ Modify filenames
+- ❌ Parse embedded JSON from script strings (that caused the bug!)
+- ❌ Modify any content
 - ❌ Add steps
-- ❌ Modify anything
 
-**Store the workflow_template EXACTLY as received.**
+**Read from disk, store in Neo4j. That's it.**
 
 ---
 
-## SKILL STORAGE SCRIPT
+## SKILL STORAGE SCRIPT (V5 - Read From Disk)
 
-**CRITICAL: Workflow JSON is EMBEDDED in the script, NOT passed as a parameter.**
+**CRITICAL: Read skill data from a JSON file on disk. NO embedded JSON in script!**
 
-Why? Passing complex JSON as CLI parameter causes escaping issues and increases failure rate.
+Why?
+- Reading with `json.load(file)` never has escaping issues
+- The V4 embedded JSON approach caused "dictionary update sequence element #0 has length 1; 2 is required" errors
+- This is cleaner and more reliable
 
-**Script template (embed workflow JSON directly):**
+**Script template (reads from metadata file):**
 
 ```python
 from neo4j import GraphDatabase
@@ -396,50 +437,48 @@ from uuid import uuid4
 parser = argparse.ArgumentParser()
 parser.add_argument('--timeout', type=int, default=30)
 parser.add_argument('--task-id', default='unknown')
+parser.add_argument('--metadata-file', required=True, help='Path to skill metadata JSON file')
 args = parser.parse_args()
 
 task_id = args.task_id
+metadata_file = args.metadata_file
 
 # ============================================================
-# SKILL DATA - EMBEDDED DIRECTLY (not as CLI parameters)
+# READ SKILL DATA FROM JSON FILE (no escaping issues!)
 # ============================================================
-SKILL_NAME = "Example Skill Name"
-SKILL_DESCRIPTION = "What this skill does"
-SKILL_CATEGORY = "Workflow"  # Workflow, Security, Infrastructure, Development, API, Analytics, Custom
-SKILL_TRIGGERS = ["trigger1", "trigger2", "trigger3"]
+print(f"[{task_id}] Reading metadata from: {metadata_file}")
 
-# Parameters that can be substituted at execution time
-SKILL_PARAMETERS = {
-    "param_name": {"type": "string", "description": "Parameter description", "default": "value"}
-}
+try:
+    with open(metadata_file, 'r') as f:
+        skill_data = json.load(f)
+except FileNotFoundError:
+    print(f"[{task_id}] ERROR: Metadata file not found: {metadata_file}", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"[{task_id}] ERROR: Invalid JSON in metadata file: {e}", file=sys.stderr)
+    sys.exit(1)
 
-# WORKFLOW TEMPLATE - Contains FILENAMES ONLY (not full script content)
-# Main-agent writes actual scripts to these files BEFORE calling skill-agent
-WORKFLOW_TEMPLATE = {
-    "steps": [
-        {
-            "step": 1,
-            "agent": "cybersecurity-agent",
-            "type": "script",
-            "language": "python",
-            "filename": "/tmp/skill_example_step_1.py",  # Script already exists on disk
-            "description": "Step 1 description",
-            "params": ["param_name"],
-            "timeout": 60
-        },
-        {
-            "step": 2,
-            "agent": "cybersecurity-agent",
-            "type": "command",
-            "filename": "/tmp/skill_example_step_2.sh",  # Script already exists on disk
-            "description": "Step 2 description",
-            "timeout": 30
-        }
-    ]
-}
-# ============================================================
+# Extract fields from loaded JSON
+SKILL_NAME = skill_data.get('name')
+SKILL_DESCRIPTION = skill_data.get('description', '')
+SKILL_CATEGORY = skill_data.get('category', 'Workflow')
+SKILL_TRIGGERS = skill_data.get('triggers', [])
+SKILL_PARAMETERS = skill_data.get('parameters', {})
+WORKFLOW_TEMPLATE = skill_data.get('workflow_template', {})
+
+# Validate required fields
+if not SKILL_NAME:
+    print(f"[{task_id}] ERROR: Missing 'name' in metadata file", file=sys.stderr)
+    sys.exit(1)
+if not SKILL_TRIGGERS:
+    print(f"[{task_id}] ERROR: Missing 'triggers' in metadata file", file=sys.stderr)
+    sys.exit(1)
+if not WORKFLOW_TEMPLATE.get('steps'):
+    print(f"[{task_id}] ERROR: Missing 'workflow_template.steps' in metadata file", file=sys.stderr)
+    sys.exit(1)
 
 print(f"[{task_id}] Storing skill: {SKILL_NAME}")
+# ============================================================
 
 workflow_json = json.dumps(WORKFLOW_TEMPLATE)
 parameters_json = json.dumps(SKILL_PARAMETERS)
@@ -486,6 +525,7 @@ try:
             print(f"[{task_id}] ID: {skill_id}")
             print(f"[{task_id}] Name: {SKILL_NAME}")
             print(f"[{task_id}] Triggers: {SKILL_TRIGGERS}")
+            print(f"[{task_id}] Steps: {len(WORKFLOW_TEMPLATE.get('steps', []))}")
         else:
             print(f"[{task_id}] ERROR: Skill '{SKILL_NAME}' already exists", file=sys.stderr)
             sys.exit(1)
@@ -497,19 +537,115 @@ finally:
     driver.close()
 ```
 
-**Key design choices:**
-- Workflow JSON EMBEDDED in script (not CLI parameter) - avoids escaping failures
-- workflow_template stores FILENAMES only (main-agent writes actual scripts before calling skill-agent)
-- Single query with OPTIONAL MATCH + WHERE + CREATE (no verification loop)
-- ONE tool call, ONE query, DONE
+**Key design choices (V5):**
+- **Reads from JSON file** - `json.load(file)` NEVER has escaping issues
+- **--metadata-file parameter** - Only CLI arg needed (besides timeout/task-id)
+- **Validates before storing** - Checks required fields
+- **Single query** with OPTIONAL MATCH + WHERE + CREATE (no verification loop)
+- **ONE tool call, ONE query, DONE**
+
+**Why this fixes the "dictionary update sequence" error:**
+- Old way: Embedded JSON in script → escaping corrupts dict structure
+- New way: JSON in file → `json.load()` parses correctly every time
 
 ---
 
-## SKILL EXECUTION WORKFLOW
+## SKILL UPDATE SCRIPT (V5 - Read From Disk)
 
-When a skill is triggered, return the STORED workflow_template (filenames only).
+**When updating a skill, read the new metadata from file:**
 
-**CRITICAL: Scripts already exist on disk. Just return the filenames.**
+```python
+from neo4j import GraphDatabase
+import os
+import sys
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--timeout', type=int, default=30)
+parser.add_argument('--task-id', default='unknown')
+parser.add_argument('--metadata-file', required=True, help='Path to updated skill metadata JSON file')
+parser.add_argument('--skill-name', required=True, help='Name of skill to update')
+args = parser.parse_args()
+
+task_id = args.task_id
+metadata_file = args.metadata_file
+skill_name = args.skill_name
+
+# Read updated metadata from file
+print(f"[{task_id}] Reading updated metadata from: {metadata_file}")
+
+try:
+    with open(metadata_file, 'r') as f:
+        skill_data = json.load(f)
+except FileNotFoundError:
+    print(f"[{task_id}] ERROR: Metadata file not found: {metadata_file}", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"[{task_id}] ERROR: Invalid JSON in metadata file: {e}", file=sys.stderr)
+    sys.exit(1)
+
+# Extract fields
+NEW_DESCRIPTION = skill_data.get('description', '')
+NEW_CATEGORY = skill_data.get('category', 'Workflow')
+NEW_TRIGGERS = skill_data.get('triggers', [])
+NEW_PARAMETERS = skill_data.get('parameters', {})
+NEW_WORKFLOW = skill_data.get('workflow_template', {})
+
+workflow_json = json.dumps(NEW_WORKFLOW)
+parameters_json = json.dumps(NEW_PARAMETERS)
+
+uri = os.getenv('NEO4J_URI')
+username = os.getenv('NEO4J_USERNAME')
+password = os.getenv('NEO4J_PASSWORD')
+
+driver = GraphDatabase.driver(uri, auth=(username, password))
+
+try:
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (s:Skill {name: $name})
+            SET s.description = $description,
+                s.category = $category,
+                s.triggers = $triggers,
+                s.workflow_template = $workflow,
+                s.parameters = $parameters,
+                s.updated_at = datetime(),
+                s.version = s.version + 1
+            RETURN s.id AS id, s.version AS version
+        """, name=skill_name, description=NEW_DESCRIPTION,
+             category=NEW_CATEGORY, triggers=NEW_TRIGGERS,
+             workflow=workflow_json, parameters=parameters_json)
+
+        record = result.single()
+        if record:
+            print(f"[{task_id}] SUCCESS: Skill updated")
+            print(f"[{task_id}] ID: {record['id']}")
+            print(f"[{task_id}] Version: {record['version']}")
+            print(f"[{task_id}] Steps: {len(NEW_WORKFLOW.get('steps', []))}")
+        else:
+            print(f"[{task_id}] ERROR: Skill '{skill_name}' not found", file=sys.stderr)
+            sys.exit(1)
+
+except Exception as e:
+    print(f"[{task_id}] ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    driver.close()
+```
+
+**Usage:**
+```bash
+python3 /tmp/skill_update.py --task-id "task-001" --skill-name "Network Scanner" --metadata-file "/tmp/skill_network_scanner_metadata.json"
+```
+
+---
+
+## SKILL EXECUTION WORKFLOW (V5 - WITH COMMANDS)
+
+When a skill is triggered, return the STORED workflow_template (with command fields).
+
+**CRITICAL: Each step has a `command` field. Main-agent just substitutes placeholders and executes.**
 
 ### Execution Response Format
 
@@ -528,8 +664,9 @@ STEP 1:
   Type: script
   Language: python
   Filename: /tmp/skill_kpi_dashboard_step_1.py
+  Command: python3 /tmp/skill_kpi_dashboard_step_1.py --count {{count}} --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'
   Description: Ingest User nodes with realistic data
-  Params: count, blueprint_id
+  Params: count
   Timeout: 60s
 
 STEP 2:
@@ -537,8 +674,8 @@ STEP 2:
   Type: script
   Language: python
   Filename: /tmp/skill_kpi_dashboard_step_2.py
+  Command: python3 /tmp/skill_kpi_dashboard_step_2.py --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'
   Description: Extract KPI data from Neo4j
-  Params: blueprint_id
   Timeout: 60s
   Output stored as: kpi_data
 
@@ -547,8 +684,8 @@ STEP 3:
   Type: script
   Language: bash
   Filename: /tmp/skill_kpi_dashboard_step_3.sh
+  Command: bash /tmp/skill_kpi_dashboard_step_3.sh '{{kpi_data}}'
   Description: Create HTML dashboard file
-  Params: kpi_data
   Timeout: 30s
 
 STEP 4:
@@ -556,34 +693,40 @@ STEP 4:
   Type: command
   Language: bash
   Filename: /tmp/skill_kpi_dashboard_step_4.sh
+  Command: bash /tmp/skill_kpi_dashboard_step_4.sh
   Description: Display dashboard content
   Timeout: 10s
 
 Ready for main-agent to execute step-by-step.
-Scripts already exist at the filenames above.
-```
-
-**NO CONTENT RETURNED** - main-agent executes files directly:
-```bash
-python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint Blueprint#1
+Use the Command field directly - just substitute placeholders.
 ```
 
 ### What main-agent Does With This
 
 ```
-main-agent receives execution plan (filenames only)
+main-agent receives execution plan (with command fields)
           ↓
 For each step:
-  - Read params to substitute (if any)
-  - Execute the file directly:
-      python3 /tmp/skill_name_step_N.py --param value
-      OR
-      bash /tmp/skill_name_step_N.sh
-  - Delegate to appropriate agent based on step.agent
+  1. Read `command` field
+  2. Substitute placeholders:
+     - {{count}} → user-provided value (e.g., 10)
+     - {{blueprint_id}} → current blueprint (e.g., Blueprint#1)
+     - {{task_id}} → current task ID (e.g., task-001-step-1)
+     - {{kpi_data}} → output from previous step with output_var="kpi_data"
+  3. Delegate substituted command to step.agent
           ↓
-Collect output, substitute into next step params if needed
+Collect output, store in output_var if specified
           ↓
 Continue until all steps complete
+```
+
+**Example execution:**
+```
+Step 1 command: python3 /tmp/skill_kpi_dashboard_step_1.py --count {{count}} --blueprint '{{blueprint_id}}' --timeout 60 --task-id '{{task_id}}'
+
+After substitution: python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint 'Blueprint#1' --timeout 60 --task-id 'task-001-step-1'
+
+→ Delegate to neo4j-graph-management-agent with this exact command
 ```
 
 ---
@@ -600,7 +743,7 @@ Continue until all steps complete
 
 ---
 
-## NEO4J SCRIPT EXECUTION METHOD
+## NEO4J SCRIPT EXECUTION METHOD (V5)
 
 **CRITICAL: Use cat + validate + python pattern for ALL Neo4j operations**
 
@@ -618,12 +761,33 @@ python3 -m py_compile /tmp/neo4j_<timestamp>.py
 python3 /tmp/neo4j_<timestamp>.py --timeout 60 --task-id "task-123"
 ```
 
-**MCP Tool call example (with validation):**
+**For Skill Creation (V5 - with metadata file):**
+```bash
+# Skill create script reads from metadata file
+cat > /tmp/skill_create.py << 'EOF'
+[SKILL CREATE SCRIPT - see SKILL STORAGE SCRIPT section]
+EOF
+
+python3 -m py_compile /tmp/skill_create.py && \
+python3 /tmp/skill_create.py --timeout 30 --task-id "task-001" --metadata-file "/tmp/skill_name_metadata.json"
+```
+
+**For Skill Update (V5 - with metadata file):**
+```bash
+cat > /tmp/skill_update.py << 'EOF'
+[SKILL UPDATE SCRIPT - see SKILL UPDATE SCRIPT section]
+EOF
+
+python3 -m py_compile /tmp/skill_update.py && \
+python3 /tmp/skill_update.py --timeout 30 --task-id "task-001" --skill-name "Skill Name" --metadata-file "/tmp/skill_name_metadata.json"
+```
+
+**MCP Tool call example (skill creation):**
 ```
 Tool: Neo4j-ExecutePythonQuery
 Function: Execute_Command
 Parameters:
-  command: "cat > /tmp/neo4j_1704378900.py << 'EOF'\n[SCRIPT]\nEOF\n\npython3 -m py_compile /tmp/neo4j_1704378900.py && python3 /tmp/neo4j_1704378900.py --timeout 60 --task-id 'task-123'"
+  command: "cat > /tmp/skill_create.py << 'EOF'\n[SCRIPT]\nEOF\n\npython3 -m py_compile /tmp/skill_create.py && python3 /tmp/skill_create.py --timeout 30 --task-id 'task-001' --metadata-file '/tmp/skill_network_scan_metadata.json'"
 ```
 
 **Why validation matters:**
@@ -635,6 +799,7 @@ Parameters:
 **Timeout values (configurable via --timeout):**
 - Health checks: 15s
 - Simple queries: 30s
+- Skill creation/update: 30s
 - Complex operations: 60s
 - Batch/long-running: 120s+
 
@@ -787,41 +952,64 @@ timeout_seconds = args.timeout
 
 ---
 
-## RESPONSE FORMAT (Updated)
+## RESPONSE FORMAT (V5)
 
+**For Skill Creation:**
 ```
 [TASK-ID: task-001]
 [STATUS: success]
 [FROM: skill-manager-agent]
 
-Summary: Skill 'Example Skill' created.
+Summary: Skill 'Network Scanner' created from metadata file.
 
 Python script:
 ```python
-[PARAMETERIZED SCRIPT]
+[SKILL CREATE SCRIPT - reads from metadata file]
 ```
 
 Command executed:
-python3 /tmp/neo4j_1704378900.py --timeout 60 --task-id "task-123"
+python3 /tmp/skill_create.py --timeout 30 --task-id "task-001" --metadata-file "/tmp/skill_network_scanner_metadata.json"
 
 Output:
-[task-123] Starting operation
-[task-123] Timeout set to: 60s
-[task-123] Step 1: Checking for existing skill
-[task-123] Step 2: Creating skill
-[task-123] Step 3: Verifying creation
-Created skill: Example Skill
-[task-123] Operation completed successfully
+[task-001] Reading metadata from: /tmp/skill_network_scanner_metadata.json
+[task-001] Storing skill: Network Scanner
+[task-001] SUCCESS: Skill created
+[task-001] ID: abc123-def456-...
+[task-001] Name: Network Scanner
+[task-001] Triggers: ['scan network', 'network discovery', 'host scan']
+[task-001] Steps: 2
 
-ID: {id}
-Triggers: {triggers}
+ID: abc123-def456-...
+Triggers: scan network, network discovery, host scan
+```
 
-[Optional: Confidence/reasoning]
+**For Skill Update:**
+```
+[TASK-ID: task-002]
+[STATUS: success]
+[FROM: skill-manager-agent]
+
+Summary: Skill 'Network Scanner' updated from metadata file.
+
+Python script:
+```python
+[SKILL UPDATE SCRIPT - reads from metadata file]
+```
+
+Command executed:
+python3 /tmp/skill_update.py --timeout 30 --task-id "task-002" --skill-name "Network Scanner" --metadata-file "/tmp/skill_network_scanner_metadata.json"
+
+Output:
+[task-002] Reading updated metadata from: /tmp/skill_network_scanner_metadata.json
+[task-002] SUCCESS: Skill updated
+[task-002] ID: abc123-def456-...
+[task-002] Version: 2
+[task-002] Steps: 3
 ```
 
 **CRITICAL:** Every response involving graph changes or queries MUST include:
 - The full executed Python script
-- The command used to run it
+- The command used to run it (showing --metadata-file path)
 - The actual output from execution
 
 ---
@@ -839,16 +1027,25 @@ Triggers: {triggers}
 
 ---
 
-## OPERATION 1: CREATE SKILL
+## OPERATION 1: CREATE SKILL (V5)
 
 **Process:**
 
-1. Main-agent sends COMPLETE pre-planned workflow
-2. You parse the skill details
-3. Call Neo4j-ExecutePythonQuery ONCE to store (using SKILL STORAGE SCRIPT)
-4. Return skill ID and confirmation
+1. Main-agent sends metadata file path: `/tmp/skill_<name>_metadata.json`
+2. You call Neo4j-ExecutePythonQuery ONCE with --metadata-file parameter
+3. Your script reads JSON from file (no escaping issues!)
+4. Script creates skill in Neo4j
+5. Return skill ID and confirmation
 
-**DO NOT plan or write scripts - main-agent already did that.**
+**DO NOT:**
+- ❌ Parse embedded JSON (that caused the dict error)
+- ❌ Plan or write scripts (main-agent already did)
+- ❌ Expect workflow content in the message (it's in the file)
+
+**Example command:**
+```bash
+python3 /tmp/skill_create.py --timeout 30 --task-id "task-001" --metadata-file "/tmp/skill_network_scan_metadata.json"
+```
 
 ---
 
