@@ -57,26 +57,34 @@ When `file-metadata_*` is detected in user message:
 | files-retrieving-agent | qdrant-retrieve | Vector DB document retrieval |
 | skill-manager-agent | Neo4j-ExecutePythonQuery | Skill CRUD in Neo4j |
 
-### Skills System (V4 - Main-Agent Plans, Skill-Agent Stores)
+### Skills System (V4 - Main-Agent Plans & Writes Files, Skill-Agent Stores Filenames)
 
-**Key change in V4:** Main-agent now plans and writes skill workflows (including scripts). Skill-manager-agent only stores and retrieves them.
+**Key change in V4:** Main-agent plans workflows AND writes script files to disk. Skill-manager-agent only stores filenames (not script content).
 
 Workflow:
 1. User requests skill creation
-2. **Main-agent** plans the workflow, writes Python scripts/bash commands, includes filenames
+2. **Main-agent** plans the workflow, writes actual scripts to `/tmp/skill_<name>_step_N.py`
 3. User approves the plan
-4. Main-agent sends COMPLETE package to skill-manager-agent
-5. **Skill-manager-agent** stores it exactly as received (no modification)
+4. Main-agent sends workflow_template with **filenames only** to skill-manager-agent
+5. **Skill-manager-agent** stores workflow_template (embeds JSON in script, not CLI parameter)
 
 Skill nodes contain:
 - `triggers`: Keywords that auto-detect the skill
 - `workflow_template`: JSON string with steps, each containing:
   - `agent`: Which sub-agent executes this step
   - `type`: "script" or "command"
-  - `filename`: **REQUIRED** - path where script will be written (e.g., `/tmp/skill_name_step_1.py`)
-  - `content`/`command`: The actual code/command
+  - `language`: "python" or "bash"
+  - `filename`: **REQUIRED** - path to script file (already exists on disk)
+  - `description`: Human-readable step description
+  - `params`: Parameters to substitute at execution time
   - `timeout`: Execution timeout
+  - **NO `content` field** - script lives in the file
 - `parameters`: JSON string defining extractable parameters
+
+**Execution:** Main-agent reads filenames from workflow_template and executes directly:
+```bash
+python3 /tmp/skill_network_scan_step_1.py --target 192.168.1.0/24
+```
 
 ### Delete Operations Routing
 
@@ -124,10 +132,14 @@ kali_mcp:execute_command("test -f /tmp/script.sh && echo 'VERIFIED' || echo 'FAI
 
 Key changes in version 4:
 
-1. **Skill planning moved to main-agent**: Main-agent now plans entire workflows including Python scripts and bash commands. Skill-manager-agent is purely a storage agent.
+1. **Skill planning AND file writing moved to main-agent**: Main-agent plans entire workflows AND writes actual script files to disk (`/tmp/skill_<name>_step_N.py`). Skill-manager-agent only stores filenames.
 
-2. **Filename field required in skills**: Every step in `workflow_template` must include a `filename` field so main-agent knows where to write and execute scripts.
+2. **Filename-only workflow_template**: workflow_template stores ONLY filenames (not script content). The `content` field is removed. Scripts already exist on disk when skill is stored.
 
-3. **Skills protection in neo4j-agent**: All delete operations in neo4j-management-agent automatically exclude Skills with `WHERE NOT n:Skill`. Only skill-manager-agent can delete Skills.
+3. **Embedded JSON in storage script**: Skill creation script embeds workflow JSON directly in the Python script (not as CLI parameter) to avoid escaping failures.
 
-4. **Stronger anti-hallucination in skill-agent**: Skill-manager-agent must call Neo4j-ExecutePythonQuery IMMEDIATELY - no narration, no verification loops, ONE tool call per operation.
+4. **Skills protection in neo4j-agent**: All delete operations in neo4j-management-agent automatically exclude Skills with `WHERE NOT n:Skill`. Only skill-manager-agent can delete Skills.
+
+5. **Stronger anti-hallucination in skill-agent**: Skill-manager-agent must call Neo4j-ExecutePythonQuery IMMEDIATELY - no narration, no verification loops, ONE tool call per operation.
+
+6. **Direct file execution**: At skill execution time, main-agent runs files directly (`python3 /tmp/skill_name_step_1.py`) instead of extracting content from workflow_template.
