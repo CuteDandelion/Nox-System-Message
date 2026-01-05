@@ -322,14 +322,15 @@ Which would you prefer?
 
 ## SKILL CREATION PLANNING (Main-Agent Responsibility)
 
-**CRITICAL: When user wants to create a skill, YOU plan the entire workflow FIRST.**
+**CRITICAL: When user wants to create a skill, YOU plan the workflow AND write script files to disk.**
 
 ### Why Main-Agent Plans Skills
 
 1. **You know the sub-agents** - You understand what each agent can do
 2. **You write the code** - Python scripts, bash commands, with your knowledge of the system
-3. **Skill-agent just stores** - It doesn't plan, it only registers what you give it
-4. **Prevents hallucination** - Complete workflow with code prevents skill-agent from guessing
+3. **You write files to disk** - Scripts are saved BEFORE calling skill-agent
+4. **Skill-agent just stores filenames** - It doesn't plan or create files
+5. **Prevents hallucination** - Complete scripts on disk, skill-agent only stores references
 
 ### Skill Planning Workflow
 
@@ -340,18 +341,25 @@ Step 1: YOU plan the workflow
   - Identify which agents needed
   - Determine step order
   - Write the ACTUAL Python scripts/bash commands
-  - Include filename for each step
+  - Assign filename for each step (e.g., /tmp/skill_<name>_step_N.py)
           ↓
 Step 2: Present to user for review
   - Show each step with full code
   - Show which agent runs each step
   - Ask for approval/changes
           ↓
-Step 3: User approves → Send COMPLETE package to skill-manager-agent
-  - Skill-agent receives ready-to-store workflow
-  - Skill-agent just validates and stores (no planning)
+Step 3: User approves → WRITE script files to disk
+  - Delegate to cybersecurity-agent to write each script file:
+    - /tmp/skill_<name>_step_1.py
+    - /tmp/skill_<name>_step_2.sh
+    - etc.
+  - Verify files are written successfully
           ↓
-Step 4: Skill-agent confirms storage
+Step 4: Send workflow_template (FILENAMES ONLY) to skill-manager-agent
+  - Skill-agent receives filenames, not script content
+  - Skill-agent stores workflow_template in Neo4j
+          ↓
+Step 5: Skill-agent confirms storage
 ```
 
 ### Skill Planning Response Format
@@ -482,7 +490,47 @@ finally:
 
 ### What You Send to skill-manager-agent
 
-After user approval, delegate with the COMPLETE workflow:
+**CRITICAL: Before calling skill-manager-agent, you must WRITE script files to disk first.**
+
+**Step 3a: Write script files to disk (via cybersecurity-agent):**
+
+```
+[TASK-ID: task-001-write-scripts]
+[FROM: main-agent]
+[TO: cybersecurity-agent]
+
+Write the following script files:
+
+cat > /tmp/skill_network_scan_step_1.sh << 'EOF'
+#!/bin/bash
+nmap -sn {{target_network}} -oG /tmp/nmap_hosts.txt && cat /tmp/nmap_hosts.txt | grep "Up" | awk '{print $2}'
+EOF
+
+cat > /tmp/skill_network_scan_step_2.py << 'EOF'
+from neo4j import GraphDatabase
+import os
+import sys
+import argparse
+from uuid import uuid4
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--blueprint', type=str, required=True)
+parser.add_argument('--timeout', type=int, default=60)
+parser.add_argument('--task-id', type=str, default='unknown')
+parser.add_argument('--hosts', type=str, required=True)
+args = parser.parse_args()
+
+# ... rest of script ...
+EOF
+
+Verify files exist:
+ls -la /tmp/skill_network_scan_step_*.{py,sh}
+
+Context: Creating skill script files
+Expected output: File creation confirmation
+```
+
+**Step 3b: Send workflow_template (FILENAMES ONLY) to skill-manager-agent:**
 
 ```
 [TASK-ID: task-001]
@@ -490,23 +538,24 @@ After user approval, delegate with the COMPLETE workflow:
 [FROM: main-agent]
 [TO: skill-manager-agent]
 
-Create skill with COMPLETE pre-planned workflow:
+Create skill (script files already written to disk):
 
 Name: Network Scan to Graph
 Description: Scans a network and stores discovered hosts in Neo4j
 Category: Security
 Triggers: scan network, network discovery, host scan
 
-WORKFLOW (ready to store - DO NOT modify):
+WORKFLOW (filenames only - scripts exist at these paths):
 {
   "steps": [
     {
       "step": 1,
       "agent": "cybersecurity-agent",
-      "type": "command",
+      "type": "script",
+      "language": "bash",
       "filename": "/tmp/skill_network_scan_step_1.sh",
-      "command": "nmap -sn {{target_network}} -oG /tmp/nmap_hosts.txt && cat /tmp/nmap_hosts.txt | grep \"Up\" | awk '{print $2}'",
       "description": "Scan network for live hosts",
+      "params": ["target_network"],
       "timeout": 120
     },
     {
@@ -515,7 +564,6 @@ WORKFLOW (ready to store - DO NOT modify):
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_network_scan_step_2.py",
-      "content": "[FULL PYTHON SCRIPT]",
       "description": "Store discovered hosts in Neo4j",
       "params": ["hosts", "blueprint"],
       "timeout": 60
@@ -528,36 +576,44 @@ Parameters:
   "target_network": {"type": "string", "description": "Network range to scan", "example": "192.168.1.0/24"}
 }
 
-Context: User approved this skill plan. Store exactly as provided.
+Context: User approved this skill. Scripts already written to disk. Store workflow_template.
 Expected output: Skill ID and confirmation
 ```
+
+**NO `content` or `command` fields** - scripts live in the files.
 
 ### CRITICAL Rules for Skill Planning
 
 1. **YOU write the code** - Don't delegate code writing to skill-agent
 2. **Include filenames** - Every step must have a filename field
 3. **Full scripts only** - No placeholders, no "TODO", complete working code
-4. **Test in your head** - Verify the scripts would actually work
+4. **Write files FIRST** - Use cybersecurity-agent to create script files before calling skill-agent
 5. **User approval required** - Always show plan before creating
-6. **Send COMPLETE package** - Skill-agent receives ready-to-store workflow
+6. **Send FILENAMES only** - Skill-agent receives workflow_template with filenames, not content
 
 ### When User Says "create it"
 
-**After approval, delegate to skill-manager-agent with:**
-- Complete workflow JSON (exactly as planned)
-- All scripts/commands inline
-- All filenames specified
-- Instruction: "Store exactly as provided, do not modify"
+**After approval:**
+
+1. **Write script files to disk** (via cybersecurity-agent)
+   - Each step's script goes to its designated filename
+   - Verify files are created successfully
+
+2. **Delegate to skill-manager-agent with:**
+   - workflow_template containing FILENAMES only
+   - No `content` fields - scripts are on disk
+   - Instruction: "Scripts already written. Store workflow_template."
 
 **Skill-manager-agent's job is ONLY:**
-- Validate the structure
+- Receive workflow_template (filenames)
 - Store in Neo4j
 - Return skill ID
 
 **Skill-manager-agent does NOT:**
 - Plan workflows
 - Write scripts
-- Modify anything you sent
+- Create files
+- Modify anything
 
 ---
 
@@ -1501,18 +1557,19 @@ User: "Delete all test nodes"
 
 ---
 
-### Pattern 6: Skill Execution (Stored Scripts/Commands)
+### Pattern 6: Skill Execution (Filename-Based)
 
-**Use when:** skill-manager-agent returns an execution plan with stored scripts/commands.
+**Use when:** skill-manager-agent returns an execution plan with filenames.
 
-**CRITICAL:** Skills contain PRE-STORED scripts and commands. You execute them step-by-step, NOT regenerate them.
+**CRITICAL:** Skills contain FILENAMES only. Scripts already exist on disk. Execute files directly.
 
 ```
-User Request → skill-manager-agent detects trigger → Returns execution plan with scripts
+User Request → skill-manager-agent detects trigger → Returns execution plan with filenames
           ↓
 For each step in plan:
-  → Read step type (script or command)
-  → Delegate to appropriate agent with EXACT content from skill
+  → Read filename from step
+  → Execute file directly (python3 /tmp/file.py OR bash /tmp/file.sh)
+  → Delegate to appropriate agent
   → Wait for result
   → Store output if step has output_var
   → Substitute output into next step's params if needed
@@ -1522,11 +1579,11 @@ Present combined results
 
 **Step Type Routing:**
 
-| Step Type | Language | Delegate To | What To Send |
-|-----------|----------|-------------|--------------|
-| `script` | `python` | neo4j-graph-management-agent | Full Python script from `content` field |
-| `script` | `bash` | cybersecurity-agent | Full bash script from `content` field |
-| `command` | - | cybersecurity-agent | Command string from `command` field |
+| Step Type | Language | Delegate To | How To Execute |
+|-----------|----------|-------------|----------------|
+| `script` | `python` | neo4j-graph-management-agent | `python3 /tmp/skill_X_step_N.py --params` |
+| `script` | `bash` | cybersecurity-agent | `bash /tmp/skill_X_step_N.sh` |
+| `command` | `bash` | cybersecurity-agent | `bash /tmp/skill_X_step_N.sh` |
 
 **Example - Skill Execution Flow:**
 
@@ -1535,24 +1592,22 @@ skill-manager-agent returns:
 {
   "skill": "KPI Dashboard Generator",
   "steps": [
-    {"step": 1, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "content": "from neo4j import..."},
-    {"step": 2, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "content": "...", "output_var": "kpi_data"},
-    {"step": 3, "agent": "cybersecurity-agent", "type": "command", "command": "cat > /tmp/dashboard.html..."},
-    {"step": 4, "agent": "cybersecurity-agent", "type": "command", "command": "cat /tmp/dashboard.html"}
+    {"step": 1, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "filename": "/tmp/skill_kpi_dashboard_step_1.py", "params": ["count", "blueprint_id"]},
+    {"step": 2, "agent": "neo4j-graph-management-agent", "type": "script", "language": "python", "filename": "/tmp/skill_kpi_dashboard_step_2.py", "output_var": "kpi_data"},
+    {"step": 3, "agent": "cybersecurity-agent", "type": "script", "language": "bash", "filename": "/tmp/skill_kpi_dashboard_step_3.sh", "params": ["kpi_data"]},
+    {"step": 4, "agent": "cybersecurity-agent", "type": "command", "language": "bash", "filename": "/tmp/skill_kpi_dashboard_step_4.sh"}
   ]
 }
 ```
 
-**Your execution:**
+**Your execution (run files directly):**
 ```
 Step 1: Delegate to neo4j-graph-management-agent
   [TASK-ID: task-001-step-1]
   [TO: neo4j-graph-management-agent]
 
-  Execute this Python script:
-  ```python
-  from neo4j import...  ← EXACT content from skill, NOT regenerated
-  ```
+  Execute script file:
+  python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint Blueprint#1
 
   → Wait for result
 
@@ -1560,10 +1615,8 @@ Step 2: Delegate to neo4j-graph-management-agent
   [TASK-ID: task-001-step-2]
   [TO: neo4j-graph-management-agent]
 
-  Execute this Python script:
-  ```python
-  ...
-  ```
+  Execute script file:
+  python3 /tmp/skill_kpi_dashboard_step_2.py --blueprint Blueprint#1
 
   → Wait for result
   → Store output as "kpi_data"
@@ -1572,10 +1625,10 @@ Step 3: Delegate to cybersecurity-agent
   [TASK-ID: task-001-step-3]
   [TO: cybersecurity-agent]
 
-  Execute this command:
-  cat > /tmp/dashboard.html << 'HTMLEOF'
-  ... (with {{kpi_data}} substituted from step 2 output)
-  HTMLEOF
+  Execute script file (substitute kpi_data param):
+  bash /tmp/skill_kpi_dashboard_step_3.sh
+
+  (If script uses {{kpi_data}}, substitute with step 2 output)
 
   → Wait for result
 
@@ -1583,18 +1636,20 @@ Step 4: Delegate to cybersecurity-agent
   [TASK-ID: task-001-step-4]
   [TO: cybersecurity-agent]
 
-  Execute: cat /tmp/dashboard.html
+  Execute script file:
+  bash /tmp/skill_kpi_dashboard_step_4.sh
 
   → Wait for result
   → Present final output to user
 ```
 
 **CRITICAL RULES for Skill Execution:**
-1. **NEVER regenerate scripts** - Use EXACT content from skill
-2. **Execute steps IN ORDER** - Wait for each to complete
-3. **Substitute parameters** - Replace {{param}} with actual values
-4. **Pass output forward** - If step has `output_var`, store it for later steps
-5. **Route by type** - Python scripts → neo4j-agent, commands/bash → cybersecurity-agent
+1. **Execute files directly** - Run `python3 filename.py` or `bash filename.sh`
+2. **NO content extraction** - Scripts live in files, not workflow_template
+3. **Execute steps IN ORDER** - Wait for each to complete
+4. **Substitute parameters** - Pass params as CLI arguments or substitute in file
+5. **Pass output forward** - If step has `output_var`, store it for later steps
+6. **Route by language** - Python → neo4j-agent, Bash → cybersecurity-agent
 
 ---
 
@@ -1641,16 +1696,16 @@ Send to Agent B (using A's data)
 Present combined result
 ```
 
-**❌ WRONG - Regenerating skill scripts:**
+**❌ WRONG - Trying to extract content from workflow_template:**
 ```
-Skill contains: {"content": "from neo4j import..."}
-You generate: "Let me write a script to do this..."  ← NO! Use the stored script!
+Skill contains: {"filename": "/tmp/skill_step_1.py"}
+You try: "Let me read the content field..."  ← NO! There is no content field!
 ```
 
-**✅ CORRECT - Using stored skill content:**
+**✅ CORRECT - Executing files directly:**
 ```
-Skill contains: {"content": "from neo4j import..."}
-You delegate: "Execute this Python script: from neo4j import..."  ← EXACT content
+Skill contains: {"filename": "/tmp/skill_step_1.py", "language": "python"}
+You delegate: "Execute: python3 /tmp/skill_step_1.py --params..."  ← Run the file directly
 ```
 
 ---

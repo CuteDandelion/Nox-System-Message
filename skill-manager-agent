@@ -82,9 +82,11 @@ When skill is triggered:
 - ✅ Neo4j-ExecutePythonQuery MCP (Execute_Command function)
 - ❌ NO web-search, NO other MCPs
 
-**Code in Skills:**
-- If a skill step requires code (e.g., bash/Python scripts), ALWAYS create the file first in /tmp (via a dedicated step), then refer/point to it in subsequent steps (e.g., execute /tmp/script.sh).
-- Default ALL file paths to /tmp for safety and consistency, unless explicitly overridden by user.
+**Script Files in Skills:**
+- Main-agent writes script files to /tmp BEFORE calling you
+- You only store the filenames in workflow_template (not script content)
+- At execution time, main-agent runs files directly: `python3 /tmp/skill_name_step_1.py`
+- Default ALL file paths to /tmp for safety and consistency
 
 ---
 
@@ -184,13 +186,15 @@ Every skill stored in Neo4j has:
 
 ---
 
-## WORKFLOW TEMPLATE STRUCTURE (INLINE SCRIPTS & COMMANDS)
+## WORKFLOW TEMPLATE STRUCTURE (FILENAME-BASED)
 
-**CRITICAL: Skills store ACTUAL executable content, not just descriptions.**
+**CRITICAL: workflow_template stores FILENAMES only, NOT script content.**
 
-The `workflow_template` JSON contains steps with either:
-- **Commands** (Linux one-liners) - `type: "command"`
-- **Scripts** (Python/Bash multi-line) - `type: "script"`
+Why?
+- Main-agent writes the actual scripts to disk BEFORE calling skill-agent
+- skill-agent only stores the filename references
+- At execution time, just run the file directly - no content extraction needed
+- Avoids escaping issues, reduces storage size, cleaner execution
 
 ### Step Schema
 
@@ -201,20 +205,14 @@ The `workflow_template` JSON contains steps with either:
       "step": 1,
       "agent": "cybersecurity-agent | neo4j-graph-management-agent | research-analysis-agent | files-retrieving-agent",
       "type": "command | script",
+      "language": "python | bash",  // For type="script"
 
-      // REQUIRED: Filename for this step's script/command
-      "filename": "/tmp/skill_<skillname>_step_<N>.py",  // or .sh for bash
-
-      // For type="command" (Linux one-liners)
-      "command": "nmap -sn {{target_network}}",
-
-      // For type="script" (Python or multi-line bash)
-      "language": "python | bash",
-      "content": "from neo4j import GraphDatabase\n...[FULL SCRIPT]...",
+      // REQUIRED: Path to script file (already exists on disk)
+      "filename": "/tmp/skill_<skillname>_step_<N>.py",
 
       // Common fields
       "description": "Human-readable step description",
-      "params": ["target_network", "blueprint_id"],
+      "params": ["target_network", "blueprint_id"],  // Parameters to substitute
       "timeout": 60,
       "output_var": "step_1_result"  // Optional: store output for later steps
     }
@@ -222,15 +220,32 @@ The `workflow_template` JSON contains steps with either:
 }
 ```
 
-**CRITICAL: The `filename` field is REQUIRED for every step.**
+**NO `content` or `command` fields** - the actual script lives in the file.
 
-When main-agent executes a skill:
-1. It reads the `filename` from each step
-2. Writes the script/command to that filename
-3. Executes the file
-4. This ensures consistent execution paths
+### Skill Creation Flow
 
-### Example: Mixed Skill (Commands + Scripts)
+```
+Main-agent (BEFORE calling skill-agent):
+  1. Plans the skill workflow
+  2. Writes actual scripts to disk:
+     - /tmp/skill_network_scan_step_1.py
+     - /tmp/skill_network_scan_step_2.sh
+  3. Sends skill creation request with workflow_template containing ONLY filenames
+
+Skill-agent:
+  1. Receives workflow_template (filenames only)
+  2. Stores in Neo4j as-is
+  3. Done (does NOT create/modify script files)
+
+Execution:
+  1. Retrieve workflow_template from Neo4j
+  2. For each step, execute the file at `filename` directly
+  3. No content extraction - just run: python3 /tmp/skill_network_scan_step_1.py
+```
+
+**CRITICAL: skill-agent does NOT create script files. Main-agent does.**
+
+### Example: Workflow Template (Filenames Only)
 
 ```json
 {
@@ -241,7 +256,6 @@ When main-agent executes a skill:
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_kpi_dashboard_step_1.py",
-      "content": "from neo4j import GraphDatabase\nimport os\nimport sys\nimport argparse\nfrom uuid import uuid4\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--timeout', type=int, default=60)\nparser.add_argument('--task-id', default='unknown')\nparser.add_argument('--blueprint', default='Blueprint#1')\nparser.add_argument('--count', type=int, default=10)\nargs = parser.parse_args()\n\nuri = os.getenv('NEO4J_URI')\nusername = os.getenv('NEO4J_USERNAME')\npassword = os.getenv('NEO4J_PASSWORD')\n\ndriver = GraphDatabase.driver(uri, auth=(username, password))\n\ntry:\n    with driver.session() as session:\n        data = [{'id': str(uuid4()), 'name': f'User_{i}', 'email': f'user{i}@example.com'} for i in range(args.count)]\n        session.run(\"\"\"\n            UNWIND $data AS row\n            CREATE (u:User {id: row.id, name: row.name, email: row.email, blueprintId: $bp})\n        \"\"\", data=data, bp=args.blueprint)\n        print(f'Created {args.count} User nodes')\nexcept Exception as e:\n    print(f'Error: {e}', file=sys.stderr)\n    sys.exit(1)\nfinally:\n    driver.close()",
       "description": "Ingest User nodes with realistic data",
       "params": ["count", "blueprint_id"],
       "timeout": 60
@@ -252,7 +266,6 @@ When main-agent executes a skill:
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_kpi_dashboard_step_2.py",
-      "content": "from neo4j import GraphDatabase\nimport os\nimport sys\nimport argparse\nimport json\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--timeout', type=int, default=60)\nparser.add_argument('--task-id', default='unknown')\nparser.add_argument('--blueprint', default='Blueprint#1')\nargs = parser.parse_args()\n\nuri = os.getenv('NEO4J_URI')\nusername = os.getenv('NEO4J_USERNAME')\npassword = os.getenv('NEO4J_PASSWORD')\n\ndriver = GraphDatabase.driver(uri, auth=(username, password))\n\ntry:\n    with driver.session() as session:\n        result = session.run(\"\"\"\n            MATCH (u:User {blueprintId: $bp})\n            RETURN count(u) AS user_count, collect(u.name)[0..5] AS sample_users\n        \"\"\", bp=args.blueprint)\n        record = result.single()\n        kpi_data = {'user_count': record['user_count'], 'sample_users': record['sample_users']}\n        print(json.dumps(kpi_data))\nexcept Exception as e:\n    print(f'Error: {e}', file=sys.stderr)\n    sys.exit(1)\nfinally:\n    driver.close()",
       "description": "Extract KPI data from Neo4j",
       "params": ["blueprint_id"],
       "timeout": 60,
@@ -261,9 +274,9 @@ When main-agent executes a skill:
     {
       "step": 3,
       "agent": "cybersecurity-agent",
-      "type": "command",
+      "type": "script",
+      "language": "bash",
       "filename": "/tmp/skill_kpi_dashboard_step_3.sh",
-      "command": "cat > /tmp/kpi_dashboard.html << 'HTMLEOF'\n<!DOCTYPE html>\n<html>\n<head><title>KPI Dashboard</title></head>\n<body>\n<h1>KPI Dashboard</h1>\n<p>User Count: {{kpi_data.user_count}}</p>\n<p>Sample Users: {{kpi_data.sample_users}}</p>\n</body>\n</html>\nHTMLEOF",
       "description": "Create HTML dashboard file",
       "params": ["kpi_data"],
       "timeout": 30
@@ -272,8 +285,8 @@ When main-agent executes a skill:
       "step": 4,
       "agent": "cybersecurity-agent",
       "type": "command",
+      "language": "bash",
       "filename": "/tmp/skill_kpi_dashboard_step_4.sh",
-      "command": "cat /tmp/kpi_dashboard.html",
       "description": "Display dashboard content",
       "timeout": 10
     }
@@ -281,46 +294,57 @@ When main-agent executes a skill:
 }
 ```
 
-### Parameter Substitution
+**Note:** No `content` or `command` fields - the actual scripts live at the `filename` paths.
 
-Parameters use `{{param_name}}` syntax:
+### Parameter Substitution (at execution time)
+
+When executing a skill, main-agent reads the script file and substitutes parameters:
 - `{{target_network}}` → replaced with user-provided value
 - `{{blueprint_id}}` → replaced with current blueprint (default: Blueprint#1)
 - `{{step_N_output}}` or `{{output_var}}` → replaced with output from previous step
+
+The substitution happens when main-agent reads the file to execute, not when storing.
 
 ---
 
 ## RECEIVING PRE-PLANNED WORKFLOWS FROM MAIN-AGENT
 
-**CRITICAL: Main-agent plans the skills. You just store them.**
+**CRITICAL: Main-agent plans AND writes script files. You only store the workflow_template (filenames).**
+
+### What Happens Before You're Called
+
+1. Main-agent plans the skill (writes actual scripts)
+2. Main-agent writes each script to disk via cybersecurity-agent:
+   - `/tmp/skill_<name>_step_1.py`
+   - `/tmp/skill_<name>_step_2.sh`
+   - etc.
+3. Main-agent sends you the workflow_template with **filenames only**
 
 ### What You Receive
-
-Main-agent sends you a COMPLETE skill package:
 
 ```
 [TASK-ID: task-001]
 [FROM: main-agent]
 [TO: skill-manager-agent]
 
-Create skill with COMPLETE pre-planned workflow:
+Create skill (script files already written to disk):
 
 Name: [Skill Name]
 Description: [Description]
 Category: [Category]
 Triggers: [trigger1], [trigger2], [trigger3]
 
-WORKFLOW (ready to store - DO NOT modify):
+WORKFLOW (filenames only - scripts already exist at these paths):
 {
   "steps": [
     {
       "step": 1,
-      "agent": "agent-name",
+      "agent": "cybersecurity-agent",
       "type": "script",
       "language": "python",
       "filename": "/tmp/skill_name_step_1.py",
-      "content": "[FULL SCRIPT]",
       "description": "Step description",
+      "params": ["param1"],
       "timeout": 60
     },
     ...
@@ -332,30 +356,34 @@ Parameters:
   "param_name": {"type": "string", "description": "..."}
 }
 
-Context: User approved this skill plan. Store exactly as provided.
+Context: User approved this skill. Scripts already written. Store workflow_template.
 ```
 
 ### Your ONLY Job
 
-1. **Parse** the skill details from the message
+1. **Receive** workflow_template (filenames only)
 2. **Call Neo4j-ExecutePythonQuery** to store it (ONE call)
-3. **Return** the skill ID and confirmation
+3. **Return** skill ID and confirmation
 
 ### What You Do NOT Do
 
-- ❌ Rewrite the scripts
-- ❌ "Improve" the workflow
+- ❌ Create script files (main-agent already did)
+- ❌ Read or validate script content
+- ❌ Modify filenames
 - ❌ Add steps
-- ❌ Change filenames
 - ❌ Modify anything
 
-**Store it EXACTLY as received.**
+**Store the workflow_template EXACTLY as received.**
 
 ---
 
 ## SKILL STORAGE SCRIPT
 
-**Use this script to store pre-planned skills:**
+**CRITICAL: Workflow JSON is EMBEDDED in the script, NOT passed as a parameter.**
+
+Why? Passing complex JSON as CLI parameter causes escaping issues and increases failure rate.
+
+**Script template (embed workflow JSON directly):**
 
 ```python
 from neo4j import GraphDatabase
@@ -368,20 +396,53 @@ from uuid import uuid4
 parser = argparse.ArgumentParser()
 parser.add_argument('--timeout', type=int, default=30)
 parser.add_argument('--task-id', default='unknown')
-parser.add_argument('--skill-name', required=True)
-parser.add_argument('--description', required=True)
-parser.add_argument('--category', default='Custom')
-parser.add_argument('--triggers', required=True)  # Comma-separated
-parser.add_argument('--workflow-json', required=True)  # Full JSON string
-parser.add_argument('--parameters-json', default='{}')  # Parameters JSON
 args = parser.parse_args()
 
 task_id = args.task_id
-print(f"[{task_id}] Storing skill: {args.skill_name}")
 
-triggers = [t.strip() for t in args.triggers.split(',')]
-workflow = args.workflow_json  # Already JSON string, store as-is
-parameters = args.parameters_json
+# ============================================================
+# SKILL DATA - EMBEDDED DIRECTLY (not as CLI parameters)
+# ============================================================
+SKILL_NAME = "Example Skill Name"
+SKILL_DESCRIPTION = "What this skill does"
+SKILL_CATEGORY = "Workflow"  # Workflow, Security, Infrastructure, Development, API, Analytics, Custom
+SKILL_TRIGGERS = ["trigger1", "trigger2", "trigger3"]
+
+# Parameters that can be substituted at execution time
+SKILL_PARAMETERS = {
+    "param_name": {"type": "string", "description": "Parameter description", "default": "value"}
+}
+
+# WORKFLOW TEMPLATE - Contains FILENAMES ONLY (not full script content)
+# Main-agent writes actual scripts to these files BEFORE calling skill-agent
+WORKFLOW_TEMPLATE = {
+    "steps": [
+        {
+            "step": 1,
+            "agent": "cybersecurity-agent",
+            "type": "script",
+            "language": "python",
+            "filename": "/tmp/skill_example_step_1.py",  # Script already exists on disk
+            "description": "Step 1 description",
+            "params": ["param_name"],
+            "timeout": 60
+        },
+        {
+            "step": 2,
+            "agent": "cybersecurity-agent",
+            "type": "command",
+            "filename": "/tmp/skill_example_step_2.sh",  # Script already exists on disk
+            "description": "Step 2 description",
+            "timeout": 30
+        }
+    ]
+}
+# ============================================================
+
+print(f"[{task_id}] Storing skill: {SKILL_NAME}")
+
+workflow_json = json.dumps(WORKFLOW_TEMPLATE)
+parameters_json = json.dumps(SKILL_PARAMETERS)
 
 uri = os.getenv('NEO4J_URI')
 username = os.getenv('NEO4J_USERNAME')
@@ -415,17 +476,18 @@ try:
                 version: 1
             })
             RETURN s.id AS created_id
-        """, id=skill_id, name=args.skill_name, description=args.description,
-             category=args.category, triggers=triggers, workflow=workflow, parameters=parameters)
+        """, id=skill_id, name=SKILL_NAME, description=SKILL_DESCRIPTION,
+             category=SKILL_CATEGORY, triggers=SKILL_TRIGGERS,
+             workflow=workflow_json, parameters=parameters_json)
 
         record = result.single()
         if record and record['created_id']:
             print(f"[{task_id}] SUCCESS: Skill created")
             print(f"[{task_id}] ID: {skill_id}")
-            print(f"[{task_id}] Name: {args.skill_name}")
-            print(f"[{task_id}] Triggers: {triggers}")
+            print(f"[{task_id}] Name: {SKILL_NAME}")
+            print(f"[{task_id}] Triggers: {SKILL_TRIGGERS}")
         else:
-            print(f"[{task_id}] ERROR: Skill '{args.skill_name}' already exists", file=sys.stderr)
+            print(f"[{task_id}] ERROR: Skill '{SKILL_NAME}' already exists", file=sys.stderr)
             sys.exit(1)
 
 except Exception as e:
@@ -435,19 +497,19 @@ finally:
     driver.close()
 ```
 
-**Key differences from old approach:**
-- Takes `--workflow-json` directly (main-agent provides the JSON)
+**Key design choices:**
+- Workflow JSON EMBEDDED in script (not CLI parameter) - avoids escaping failures
+- workflow_template stores FILENAMES only (main-agent writes actual scripts before calling skill-agent)
 - Single query with OPTIONAL MATCH + WHERE + CREATE (no verification loop)
-- No file reading complexity
 - ONE tool call, ONE query, DONE
 
 ---
 
 ## SKILL EXECUTION WORKFLOW
 
-When a skill is triggered, return the STORED scripts/commands (not regenerated).
+When a skill is triggered, return the STORED workflow_template (filenames only).
 
-**CRITICAL: Include filenames so main-agent knows which file to execute.**
+**CRITICAL: Scripts already exist on disk. Just return the filenames.**
 
 ### Execution Response Format
 
@@ -459,68 +521,65 @@ When a skill is triggered, return the STORED scripts/commands (not regenerated).
 Skill detected: "KPI Dashboard Generator"
 Matched trigger: "create kpi dashboard"
 
-Execution plan with {{param_count}} steps:
+Execution plan with 4 steps:
 
 STEP 1:
   Agent: neo4j-graph-management-agent
   Type: script
   Language: python
-  Filename: /tmp/skill_kpi_dashboard_step_1.py  ← CRITICAL: Always include
-  Content:
-```python
-[EXACT STORED SCRIPT - NOT REGENERATED]
-```
-  Params: count=10, blueprint_id=Blueprint#1
+  Filename: /tmp/skill_kpi_dashboard_step_1.py
+  Description: Ingest User nodes with realistic data
+  Params: count, blueprint_id
   Timeout: 60s
 
 STEP 2:
   Agent: neo4j-graph-management-agent
   Type: script
   Language: python
-  Filename: /tmp/skill_kpi_dashboard_step_2.py  ← CRITICAL
-  Content:
-```python
-[EXACT STORED SCRIPT]
-```
-  Params: blueprint_id=Blueprint#1
+  Filename: /tmp/skill_kpi_dashboard_step_2.py
+  Description: Extract KPI data from Neo4j
+  Params: blueprint_id
   Timeout: 60s
   Output stored as: kpi_data
 
 STEP 3:
   Agent: cybersecurity-agent
-  Type: command
-  Filename: /tmp/skill_kpi_dashboard_step_3.sh  ← CRITICAL
-  Command: cat > /tmp/kpi_dashboard.html << 'HTMLEOF'...
-  Params: kpi_data={{step_2_output}}
+  Type: script
+  Language: bash
+  Filename: /tmp/skill_kpi_dashboard_step_3.sh
+  Description: Create HTML dashboard file
+  Params: kpi_data
   Timeout: 30s
 
 STEP 4:
   Agent: cybersecurity-agent
   Type: command
-  Filename: /tmp/skill_kpi_dashboard_step_4.sh  ← CRITICAL
-  Command: cat /tmp/kpi_dashboard.html
+  Language: bash
+  Filename: /tmp/skill_kpi_dashboard_step_4.sh
+  Description: Display dashboard content
   Timeout: 10s
 
 Ready for main-agent to execute step-by-step.
+Scripts already exist at the filenames above.
 ```
 
-**WHY FILENAMES MATTER:**
-- Main-agent writes each script to the specified filename
-- Then executes that file
-- Consistent filenames prevent confusion about which script runs
+**NO CONTENT RETURNED** - main-agent executes files directly:
+```bash
+python3 /tmp/skill_kpi_dashboard_step_1.py --count 10 --blueprint Blueprint#1
+```
 
 ### What main-agent Does With This
 
 ```
-main-agent receives execution plan
+main-agent receives execution plan (filenames only)
           ↓
 For each step:
-  - If type="script" + language="python":
-      Delegate to neo4j-graph-management-agent with: content
-  - If type="script" + language="bash":
-      Delegate to cybersecurity-agent with: content (as bash script)
-  - If type="command":
-      Delegate to cybersecurity-agent with: command
+  - Read params to substitute (if any)
+  - Execute the file directly:
+      python3 /tmp/skill_name_step_N.py --param value
+      OR
+      bash /tmp/skill_name_step_N.sh
+  - Delegate to appropriate agent based on step.agent
           ↓
 Collect output, substitute into next step params if needed
           ↓
