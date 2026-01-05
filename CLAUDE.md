@@ -210,7 +210,7 @@ Key changes in version 5:
 
 1. **Disk-based metadata JSON**: Main-agent writes a `metadata.json` file containing ALL skill info (name, triggers, parameters, workflow_template). Skill-manager-agent reads from this file.
 
-2. **Fixes "dictionary update sequence" error**: The V4 approach of embedding JSON in Python scripts caused escaping corruption. V5 uses `json.load(file)` which never has escaping issues.
+2. **Root cause of "dictionary update sequence" error**: The error was caused by passing keyword arguments to Neo4j's `session.run()`. The driver's internal logic uses `dict(parameters or {}, **kwargs)` which fails with keyword args. **Fix: Always use `session.run(query, params)` with an explicit dict, never keyword arguments.**
 
 3. **Full skill creation after approval**: When user approves (says "yes", "create", etc.), main-agent automatically: (1) writes ALL files, (2) calls skill-manager-agent to store in Neo4j, (3) reports completion. Both phases happen automatically.
 
@@ -224,8 +224,18 @@ Key changes in version 5:
 
 8. **Placeholder substitution**: Commands use `{{placeholder}}` syntax for parameters (`{{target_network}}`), previous step output (`{{step_1_output}}`), and system values (`{{blueprint_id}}`, `{{task_id}}`).
 
-9. **Neo4j auth fix**: Use `basic_auth()` for driver authentication to prevent "dictionary update sequence element #0 has length 1; 2 is required" error:
+9. **Neo4j auth fix**: Use `basic_auth()` for driver authentication:
    ```python
    from neo4j import GraphDatabase, basic_auth
    driver = GraphDatabase.driver(uri, auth=basic_auth(username, password))
    ```
+
+10. **session.run() parameter syntax**: The "dictionary update sequence element #0 has length 1; 2 is required" error is caused by passing keyword arguments to `session.run()`. Always use an explicit params dict:
+    ```python
+    # WRONG - causes dict error:
+    result = session.run(query, id=id, name=name, triggers=triggers)
+
+    # CORRECT - use params dict:
+    params = {'id': id, 'name': name, 'triggers': triggers}
+    result = session.run(query, params)
+    ```

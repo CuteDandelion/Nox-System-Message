@@ -128,23 +128,25 @@ try:
     with driver.session(default_access_mode="WRITE") as session:
         # Example: Multiple queries with progress
         print(f"[{task_id}] Step 1: Schema discovery")
+        params1 = {'bp': bp}
         result1 = session.run("""
             MATCH (n {blueprintId: $bp})
             RETURN DISTINCT labels(n) AS labels, count(n) AS count
             ORDER BY count DESC
-        """, bp=bp, timeout=timeout_seconds)
+        """, params1)
         
         for record in result1:
             print(f"  {record['labels']} : {record['count']}")
 
         print(f"[{task_id}] Step 2: Recent entities")
+        params2 = {'bp': bp}
         result2 = session.run("""
             MATCH (n {blueprintId: $bp})
             WHERE n.created IS NOT NULL
             RETURN n.name AS name, n.created AS created
             ORDER BY n.created DESC
             LIMIT 10
-        """, bp=bp, timeout=timeout_seconds)
+        """, params2)
         
         for record in result2:
             print(f"  - {record['name']} ({record['created']})")
@@ -165,6 +167,32 @@ finally:
 - Per-query timeout support (if driver supports it)
 - Multiple sequential operations in one script
 - Graceful environment validation
+
+---
+
+## CRITICAL: session.run() PARAMETER SYNTAX
+
+**The "dictionary update sequence element #0 has length 1; 2 is required" error is caused by passing keyword arguments to `session.run()`.**
+
+### ❌ WRONG - Causes dict error:
+```python
+# Keyword arguments cause driver's internal dict merge to fail
+result = session.run(query, bp=bp, name=name, count=count)
+```
+
+### ✅ CORRECT - Use explicit params dict:
+```python
+# Create params dict and pass as single positional argument
+params = {'bp': bp, 'name': name, 'count': count}
+result = session.run(query, params)
+```
+
+**Why this matters:**
+- Neo4j driver's `session.run()` internally merges parameters using `dict(parameters or {}, **kwargs)`
+- Passing many keyword arguments directly causes this merge logic to fail
+- Passing a single params dict as a positional argument bypasses the problematic merge
+
+**RULE:** Always create an explicit params dict and pass it as a single argument to `session.run()`. Never use keyword arguments.
 
 ---
 
@@ -390,18 +418,20 @@ try:
                 print(f"[{task_id}] Use skill-manager-agent to manage Skills")
                 sys.exit(1)
 
+            params = {'bp': bp, 'label': args.label}
             count_result = session.run("""
                 MATCH (n {blueprintId: $bp})
                 WHERE $label IN labels(n)
                 RETURN count(n) AS count
-            """, bp=bp, label=args.label)
+            """, params)
         else:
             # All nodes except Skills
+            params = {'bp': bp}
             count_result = session.run("""
                 MATCH (n {blueprintId: $bp})
                 WHERE NOT n:Skill
                 RETURN count(n) AS count
-            """, bp=bp)
+            """, params)
 
         count = count_result.single()['count']
         print(f"[{task_id}] Found {count} nodes to delete")
@@ -414,19 +444,21 @@ try:
         print(f"[{task_id}] Step 2: Deleting nodes (Skills protected)")
 
         if args.label:
+            params = {'bp': bp, 'label': args.label}
             delete_result = session.run("""
                 MATCH (n {blueprintId: $bp})
                 WHERE $label IN labels(n) AND NOT n:Skill
                 DETACH DELETE n
                 RETURN count(*) AS deleted
-            """, bp=bp, label=args.label)
+            """, params)
         else:
+            params = {'bp': bp}
             delete_result = session.run("""
                 MATCH (n {blueprintId: $bp})
                 WHERE NOT n:Skill
                 DETACH DELETE n
                 RETURN count(*) AS deleted
-            """, bp=bp)
+            """, params)
 
         deleted = delete_result.single()['deleted']
         print(f"[{task_id}] Deleted {deleted} nodes")
